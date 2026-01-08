@@ -32,7 +32,7 @@ A future `NoonCommander v6` should consolidate the best features from all versio
     *   A detailed and colorful UI with visual indicators for file types, symbolic links, and marked items.
     *   A destination picker with support for favorites.
 *   **Technical Excellence:**
-    *   Robust error handling with `set -euo pipefail`.
+    *   Robust error handling with `set -uo pipefail`. (no -e yet)
     *   Safe arithmetic and file operations.
     *   Proper terminal state management and use of the alternate screen buffer.
     *   A clean, modular, and well-documented codebase.
