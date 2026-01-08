@@ -1,167 +1,3 @@
---- Diff for selecta.sh vs selecta2.sh ---
-1,67c1
-< #!/usr/bin/env bash
-<
-< file_selector.sh: Interactive file selector for current directory
-<
-< Features:
-<
-< - Handles large directories by indexing files in a temp file under /tmp
-<
-< - Interactive navigation with arrow keys and page up/down
-<
-< - Wraps long filenames with indentation
-<
-< - Press Enter to select a file; selection saved to a temp file in cwd
-<
-< - Function keys (F1-F4) call auxiliary scripts defined by environment variables FS_F1..FS_F4
-<
-< --- Configuration and setup ---
-<
-< Maximum lines per page (terminal height - header/footer)
-<
-< TERM_LINES=$(tput lines) PAGE_SIZE=$((TERM_LINES - 4)) TERM_COLS=$(tput cols)
-<
-< Temporary index file for listing all filenames
-<
-< Unique per working directory using hash of cwd path
-<
-< CWD_HASH=$(pwd | md5sum | cut -d' ' -f1) INDEX_FILE="/tmp/file_selector_${CWD_HASH}.idx"
-<
-< File to store selected filename
-<
-< SELECTED_FILE="$(pwd)/.file_selection.tmp"
-<
-< Cleanup old index file if directory content changed (optional)
-<
-< You may implement logic to refresh if mtime differs. For simplicity, always recreate.
-<
-< rm -f "$INDEX_FILE"
-<
-< Create index: filenames only (no directories), sorted
-<
-< Adjust find options if you want other file types
-<
-< find . -maxdepth 1 -type f -printf '%P\n' | sort > "$INDEX_FILE" TOTAL=$(wc -l < "$INDEX_FILE")
-<
-< Variables for interactive navigation
-<
-< offset=0          # current page start (0-based) selected=0        # current selected index (0-based)
-<
-< enable_wrap() { local text="$1" width=$((TERM_COLS - 4)) if [ ${#text} -le "$width" ]; then printf "%s\n" "  $text" else # wrap by words echo "$text" | awk -v w=$width '{for(i=1;i<=NF;){line=$i;i++; while(i<=NF && length(line)+length($i)+1<=w){line=line" "$i;i++} print "  "line; line=""}}' fi }
-<
-< draw_page() { clear echo "Files in $(pwd) (total: $TOTAL)" echo "Use Arrow keys to navigate, Enter to select, F1-F4 to trigger auxiliary scripts" echo "────────────────────────────────────────────────────────────" local end=$((offset + PAGE_SIZE - 1)) [ $end -ge $((TOTAL - 1)) ] && end=$((TOTAL - 1)) for ((i=offset; i<=end; i++)); do line=$(sed -n "$((i+1))p" "$INDEX_FILE") if [ $i -eq $selected ]; then # highlight selected printf "> "; enable_wrap "$line" else printf "  "; enable_wrap "$line" fi done }
-<
-< Function to handle selection and exit
-<
-< finish() { local sel_line=$(sed -n "$((selected+1))p" "$INDEX_FILE") echo "$sel_line" > "$SELECTED_FILE" cleanup exit }
-<
-< Cleanup temp files
-<
-< cleanup() { rm -f "$INDEX_FILE" }
-<
-< Trap signals to cleanup
-<
-< trap cleanup EXIT
-<
-< Main loop
-<
-< while true; do draw_page n  # read key (up to 3 chars) IFS= read -rsn3 key case "$key" in $'\e[A') # Up arrow ((selected>0)) && selected-- ((selected<offset)) && offset=$selected ;; $'\e[B') # Down arrow ((selected<TOTAL-1)) && selected++ ((selected>offset+PAGE_SIZE-1)) && offset=$((selected-PAGE_SIZE+1)) ;; $'\e[5~') # Page Up ((offset-PAGE_SIZE>=0)) && offset=$((offset-PAGE_SIZE)) || offset=0 selected=$offset ;; $'\e[6~') # Page Down ((offset+PAGE_SIZE<TOTAL)) && offset=$((offset+PAGE_SIZE)) || offset=$((TOTAL-PAGE_SIZE>0?TOTAL-PAGE_SIZE:0)) selected=$offset ;; "") # Enter finish ;; $'\e[11~') # F1 [ -n "$FS_F1" ] && eval "$FS_F1 "$(sed -n "$((selected+1))p" "$INDEX_FILE")"" ;; $'\e[12~') # F2 [ -n "$FS_F2" ] && eval "$FS_F2 "$(sed -n "$((selected+1))p" "$INDEX_FILE")"" ;; $'\e[13~') # F3 [ -n "$FS_F3" ] && eval "$FS_F3 "$(sed -n "$((selected+1))p" "$INDEX_FILE")"" ;; $'\e[14~') # F4 [ -n "$FS_F4" ] && eval "$FS_F4 "$(sed -n "$((selected+1))p" "$INDEX_FILE")"" ;; esac done
----
-> #!/bin/bash
-68a3,93
-> # CONFIGURATION
-> FILES_PER_PAGE=20
-> TMP_INDEX_FILE="/tmp/file_selector_index_$(pwd | md5sum | awk '{print $1}').tmp"
-> SELECTION_FILE="./.file_selector_selection.tmp"
-> WRAP_WIDTH=$(tput cols)
-> INDENT="    "
->
-> # Create hashed index file
-> find . -maxdepth 1 -type f -printf '%P\n' | nl -w6 -nln > "$TMP_INDEX_FILE"
->
-> TOTAL_FILES=$(wc -l < "$TMP_INDEX_FILE")
-> TOTAL_PAGES=$(( (TOTAL_FILES + FILES_PER_PAGE - 1) / FILES_PER_PAGE ))
-> CURRENT_PAGE=0
-> CURSOR_POS=0
->
-> # Ensure selection file exists
-> > "$SELECTION_FILE"
->
-> # Terminal setup
-> stty -echo -icanon time 0 min 0
-> trap 'tput cnorm; stty sane; clear; exit' INT TERM EXIT
->
-> draw_page() {
->     clear
->     tput civis
->     echo "File Selector - Page $((CURRENT_PAGE+1))/$TOTAL_PAGES"
->     echo "Use ↑ ↓ to navigate, [Enter] to select, [q] to quit"
->
->     START_LINE=$(( CURRENT_PAGE * FILES_PER_PAGE + 1 ))
->     END_LINE=$(( START_LINE + FILES_PER_PAGE - 1 ))
->     awk -v s="$START_LINE" -v e="$END_LINE" -v c="$CURSOR_POS" -v w="$WRAP_WIDTH" '
->     NR>=s && NR<=e {
->         fname = substr($0, index($0,$2));
->         display = fname;
->         gsub(/[^[:print:]]/, "?", display);
->         prefix = (NR-s == c ? "> " : "  ");
->         while (length(display) > w - 4) {
->             print prefix substr(display,1,w-4);
->             display = substr(display,w-3);
->             prefix = "  '"$INDENT"'";
->         }
->         print prefix display;
->     }' "$TMP_INDEX_FILE"
-> }
->
-> move_cursor_up() {
->     if (( CURSOR_POS > 0 )); then
->         ((CURSOR_POS--))
->     elif (( CURRENT_PAGE > 0 )); then
->         ((CURRENT_PAGE--))
->         CURSOR_POS=$((FILES_PER_PAGE - 1))
->     fi
-> }
->
-> move_cursor_down() {
->     if (( CURSOR_POS < FILES_PER_PAGE - 1 && CURSOR_POS + CURRENT_PAGE * FILES_PER_PAGE < TOTAL_FILES - 1 )); then
->         ((CURSOR_POS++))
->     elif (( CURRENT_PAGE < TOTAL_PAGES - 1 )); then
->         ((CURRENT_PAGE++))
->         CURSOR_POS=0
->     fi
-> }
->
-> select_file() {
->     TARGET_LINE=$(( CURRENT_PAGE * FILES_PER_PAGE + CURSOR_POS + 1 ))
->     FILE=$(awk -v l="$TARGET_LINE" 'NR==l {print substr($0, index($0,$2))}' "$TMP_INDEX_FILE")
->     echo "$FILE" >> "$SELECTION_FILE"
-> }
->
-> # Key reading loop
-> while true; do
->     draw_page
->     read -rsn1 key
->     if [[ $key == $'\x1b' ]]; then
->         read -rsn2 -t 0.01 rest
->         key+=$rest
->         case "$key" in
->             $'\x1b[A') move_cursor_up ;;
->             $'\x1b[B') move_cursor_down ;;
->         esac
->     elif [[ $key == "" ]]; then
->         select_file
->     elif [[ $key == "q" ]]; then
->         break
->     fi
-> done
->
-> # Cleanup and exit
-> tput cnorm
-> clear
-> echo "Selected files saved to: $SELECTION_FILE"
-
 --- Diff for noonCommander/NoonC.sh vs noonCommander/NoonC2.sh ---
 1c1
 <  #!/bin/bash
@@ -563,34 +399,632 @@
 < tput cnorm; stty sane; clear
 < echo "Session ended. Selections: $SELECTION_FILE"
 
---- Diff for noonCommander/NoonC3.sh vs noonCommander/NoonC_v2_4.sh ---
-1,6c1,113
+--- Diff for noonCommander/NoonC3.sh vs noonCommander/NoonCommander.sh ---
+1c1,156
 <  preview_file() {
-<     local file="$(get_selected_path)"
-<     if [[ -d "$file" ]]; then
+---
+> #!/bin/bash
+>
+> # BASH Commander - Enhanced File Manager
+> # Version: 2.0
+>
+> # Configuration
+> FILES_PER_PAGE=20
+> INDENT="    "
+> WRAP_WIDTH=$(tput cols)
+> SELECTION_FILE=".commander_selection.tmp"
+> CLIPBOARD_FILE=".commander_clipboard.tmp"
+>
+> # Initialize
+> CURRENT_DIR="$(pwd)"
+> > "$SELECTION_FILE"
+> > "$CLIPBOARD_FILE"
+> CURSOR_POS=0
+> CURRENT_PAGE=0
+> CLIPBOARD_MODE=""  # 'copy' or 'cut'
+>
+> # Terminal setup
+> stty -echo -icanon time 0 min 0
+> trap 'cleanup_exit' INT TERM EXIT
+>
+> cleanup_exit() {
+>     tput cnorm
+>     stty sane
+>     clear
+>     exit
+> }
+>
+> # Color codes
+> C_RESET="\033[0m"
+> C_BOLD="\033[1m"
+> C_DIM="\033[2m"
+> C_GREEN="\033[32m"
+> C_BLUE="\033[34m"
+> C_YELLOW="\033[33m"
+> C_RED="\033[31m"
+> C_CYAN="\033[36m"
+>
+> index_dir() {
+>     local dir="$1"
+>     TMP_INDEX_FILE="/tmp/file_commander_index_$(echo "$dir" | md5sum | awk '{print $1}').tmp"
+>     find "$dir" -mindepth 1 -maxdepth 1 2>/dev/null | sort > "$TMP_INDEX_FILE"
+>     TOTAL_FILES=$(wc -l < "$TMP_INDEX_FILE")
+>     TOTAL_PAGES=$(( (TOTAL_FILES + FILES_PER_PAGE - 1) / FILES_PER_PAGE ))
+>     [[ $TOTAL_FILES -eq 0 ]] && TOTAL_PAGES=1
+> }
+>
+> format_size() {
+>     local size=$1
+>     if (( size < 1024 )); then
+>         echo "${size}B"
+>     elif (( size < 1048576 )); then
+>         echo "$((size / 1024))K"
+>     elif (( size < 1073741824 )); then
+>         echo "$((size / 1048576))M"
+>     else
+>         echo "$((size / 1073741824))G"
+>     fi
+> }
+>
+> draw_page() {
+>     clear
+>     tput civis
+>
+>     # Header
+>     echo -e "${C_BOLD}${C_CYAN}📁 BASH COMMANDER${C_RESET} - ${C_GREEN}$CURRENT_DIR${C_RESET}"
+>     echo -e "${C_DIM}Files: $TOTAL_FILES | Page: $((CURRENT_PAGE + 1))/$TOTAL_PAGES${C_RESET}"
+>
+>     # Keybindings
+>     echo -e "${C_YELLOW}↑↓${C_RESET}:Move ${C_YELLOW}Enter${C_RESET}:Open ${C_YELLOW}←${C_RESET}:Up ${C_YELLOW}[p]${C_RESET}:Preview ${C_YELLOW}[e]${C_RESET}:Edit ${C_YELLOW}[c]${C_RESET}:Copy ${C_YELLOW}[x]${C_RESET}:Cut ${C_YELLOW}[v]${C_RESET}:Paste"
+>     echo -e "${C_YELLOW}[m]${C_RESET}:Move ${C_YELLOW}[d]${C_RESET}:Delete ${C_YELLOW}[r]${C_RESET}:Rename ${C_YELLOW}[n]${C_RESET}:New ${C_YELLOW}[s]${C_RESET}:Search ${C_YELLOW}[i]${C_RESET}:Info ${C_YELLOW}[q]${C_RESET}:Quit"
+>     echo
+>
+>     # Clipboard status
+>     if [[ -s "$CLIPBOARD_FILE" ]]; then
+>         local clip_item=$(cat "$CLIPBOARD_FILE")
+>         echo -e "${C_BLUE}📋 Clipboard [$CLIPBOARD_MODE]: $(basename "$clip_item")${C_RESET}"
+>         echo
+>     fi
+>
+>     START=$((CURRENT_PAGE * FILES_PER_PAGE + 1))
+>     END=$((START + FILES_PER_PAGE - 1))
+>
+>     awk -v s="$START" -v e="$END" -v c="$CURSOR_POS" -v w="$WRAP_WIDTH" -v base="$CURRENT_DIR" '
+>     NR >= s && NR <= e {
+>         path = $0;
+>         fname = substr(path, length(base) + 2);
+>         prefix = (NR - s == c ? "> " : "  ");
+>
+>         # Show directory indicator
+>         cmd = "test -d \"" path "\"";
+>         if (system(cmd) == 0) {
+>             fname = fname "/";
+>         }
+>
+>         while (length(fname) > w - 4) {
+>             print prefix substr(fname,1,w-4);
+>             fname = substr(fname,w-3);
+>             prefix = "  '"$INDENT"'";
+>         }
+>         print prefix fname;
+>     }' "$TMP_INDEX_FILE"
+>
+>     # Show empty directory message
+>     if [[ $TOTAL_FILES -eq 0 ]]; then
+>         echo -e "  ${C_DIM}(Empty directory)${C_RESET}"
+>     fi
+> }
+>
+> move_cursor_up() {
+>     if (( CURSOR_POS > 0 )); then
+>         ((CURSOR_POS--))
+>     elif (( CURRENT_PAGE > 0 )); then
+>         ((CURRENT_PAGE--))
+>         CURSOR_POS=$((FILES_PER_PAGE - 1))
+>     fi
+> }
+>
+> move_cursor_down() {
+>     if (( CURSOR_POS < FILES_PER_PAGE - 1 && CURSOR_POS + CURRENT_PAGE * FILES_PER_PAGE < TOTAL_FILES - 1 )); then
+>         ((CURSOR_POS++))
+>     elif (( CURRENT_PAGE < TOTAL_PAGES - 1 )); then
+>         ((CURRENT_PAGE++))
+>         CURSOR_POS=0
+>     fi
+> }
+>
+> get_selected_path() {
+>     local line=$((CURRENT_PAGE * FILES_PER_PAGE + CURSOR_POS + 1))
+>     sed -n "${line}p" "$TMP_INDEX_FILE"
+> }
+>
+> show_message() {
+>     local msg="$1"
+>     local duration="${2:-2}"
+>     tput cnorm
+>     stty sane
+>     echo -e "\n${C_GREEN}${msg}${C_RESET}"
+>     sleep "$duration"
+>     stty -echo -icanon time 0 min 0
+> }
+>
+> show_error() {
+>     local msg="$1"
+>     local duration="${2:-2}"
+>     tput cnorm
+>     stty sane
+>     echo -e "\n${C_RED}${msg}${C_RESET}"
+>     sleep "$duration"
+>     stty -echo -icanon time 0 min 0
+> }
+>
+> preview_file() {
+2a158,159
+>     [[ -z "$file" ]] && return
+>
+4,5c161
 <         echo "'$file' is a directory."
 <         sleep 1
-<         return
+---
+>         show_error "'$file' is a directory."
+8,9c164,167
+<     mime=$(file --mime-type -b "$file")
+<     tput cnorm; stty sane
+---
+>
+>     local mime=$(file --mime-type -b "$file" 2>/dev/null)
+>     tput cnorm
+>     stty sane
+11,12c169,171
+<     echo "Previewing: $file"
+<     echo "---------------------------"
+---
+>     echo -e "${C_CYAN}${C_BOLD}Previewing:${C_RESET} $file"
+>     echo "-----------------------------------"
+>
+15c174,178
+<             less "$file"
+---
+>             if command -v bat &>/dev/null; then
+>                 bat --style=plain "$file"
+>             else
+>                 less "$file"
+>             fi
+18c181,186
+<             identify "$file" 2>/dev/null || file "$file"
+---
+>             if command -v identify &>/dev/null; then
+>                 identify "$file" 2>/dev/null
+>             else
+>                 file "$file"
+>             fi
+>             echo
+22c190,195
+<             pdftotext "$file" - | less
+---
+>             if command -v pdftotext &>/dev/null; then
+>                 pdftotext "$file" - | less
+>             else
+>                 echo "pdftotext not found. Install poppler-utils."
+>                 read -p "Press Enter to continue..."
+>             fi
+25c198,205
+<             ffprobe "$file" 2>&1 | less
+---
+>             if command -v ffprobe &>/dev/null; then
+>                 ffprobe "$file" 2>&1 | less
+>             elif command -v mediainfo &>/dev/null; then
+>                 mediainfo "$file" | less
+>             else
+>                 file "$file"
+>                 read -p "Press Enter to continue..."
+>             fi
+27,28c207,215
+<         application/zip)
+<             unzip -l "$file" | less
+---
+>         application/zip|application/x-tar|application/gzip)
+>             if command -v unzip &>/dev/null && [[ "$mime" == "application/zip" ]]; then
+>                 unzip -l "$file" | less
+>             elif command -v tar &>/dev/null; then
+>                 tar -tzf "$file" 2>/dev/null | less || tar -tJf "$file" 2>/dev/null | less
+>             else
+>                 file "$file"
+>                 read -p "Press Enter to continue..."
+>             fi
+32c219,223
+<             xxd "$file" | less
+---
+>             if command -v xxd &>/dev/null; then
+>                 xxd "$file" | head -n 100 | less
+>             else
+>                 hexdump -C "$file" | head -n 100 | less
+>             fi
+34a226,228
+>
+>     stty -echo -icanon time 0 min 0
+>     index_dir "$CURRENT_DIR"
+38a233,234
+>     [[ -z "$file" ]] && return
+>
+40,41c236
+<         echo "'$file' is a directory."
+<         sleep 1
+---
+>         show_error "'$file' is a directory."
+44,45c239,242
+<     mime=$(file --mime-type -b "$file")
+<     tput cnorm; stty sane
+---
+>
+>     local mime=$(file --mime-type -b "$file" 2>/dev/null)
+>     tput cnorm
+>     stty sane
+47,48c244,247
+<     echo "Editing: $file"
+<     echo "---------------------------"
+---
+>
+>     # Use EDITOR environment variable or default to nano
+>     local editor="${EDITOR:-nano}"
+>
+51c250,443
+<             nano "$file"
+---
+>             "$editor" "$file"
+>             ;;
+>         *)
+>             echo "Binary file detected."
+>             echo -n "Edit with hex editor? [y/N]: "
+>             read ans
+>             if [[ "$ans" == [yY] ]]; then
+>                 if command -v hexedit &>/dev/null; then
+>                     hexedit "$file"
+>                 elif command -v xxd &>/dev/null; then
+>                     xxd "$file" > /tmp/hex_edit.tmp
+>                     "$editor" /tmp/hex_edit.tmp
+>                     echo -n "Save changes? [y/N]: "
+>                     read save
+>                     [[ "$save" == [yY] ]] && xxd -r /tmp/hex_edit.tmp > "$file"
+>                     rm -f /tmp/hex_edit.tmp
+>                 else
+>                     echo "No hex editor available."
+>                     read -p "Press Enter to continue..."
+>                 fi
+>             fi
+>             ;;
+>     esac
+>
+>     stty -echo -icanon time 0 min 0
+>     index_dir "$CURRENT_DIR"
+> }
+>
+> rename_file() {
+>     local src="$(get_selected_path)"
+>     [[ -z "$src" ]] && return
+>
+>     tput cnorm
+>     stty sane
+>     echo -ne "\n${C_YELLOW}Rename '$(basename "$src")' to: ${C_RESET}"
+>     read newname
+>
+>     if [[ -z "$newname" ]]; then
+>         show_message "Rename cancelled."
+>         return
+>     fi
+>
+>     local dest="$(dirname "$src")/$newname"
+>     if [[ -e "$dest" ]]; then
+>         show_error "File already exists!"
+>     elif mv -- "$src" "$dest" 2>/dev/null; then
+>         show_message "Renamed successfully."
+>         index_dir "$CURRENT_DIR"
+>     else
+>         show_error "Rename failed!"
+>     fi
+> }
+>
+> delete_file() {
+>     local path="$(get_selected_path)"
+>     [[ -z "$path" ]] && return
+>
+>     tput cnorm
+>     stty sane
+>     echo -ne "\n${C_RED}Delete '$(basename "$path")'? [y/N]: ${C_RESET}"
+>     read ans
+>
+>     if [[ "$ans" == [yY] ]]; then
+>         if rm -rf -- "$path" 2>/dev/null; then
+>             show_message "Deleted successfully."
+>             index_dir "$CURRENT_DIR"
+>         else
+>             show_error "Delete failed!"
+>         fi
+>     else
+>         show_message "Delete cancelled."
+>     fi
+> }
+>
+> copy_file() {
+>     local src="$(get_selected_path)"
+>     [[ -z "$src" ]] && return
+>
+>     tput cnorm
+>     stty sane
+>     echo -ne "\n${C_YELLOW}Copy to (path): ${C_RESET}"
+>     read dest
+>
+>     [[ -z "$dest" ]] && { show_message "Copy cancelled."; return; }
+>
+>     if cp -r -- "$src" "$dest" 2>/dev/null; then
+>         show_message "Copied successfully."
+>         index_dir "$CURRENT_DIR"
+>     else
+>         show_error "Copy failed!"
+>     fi
+> }
+>
+> move_file() {
+>     local src="$(get_selected_path)"
+>     [[ -z "$src" ]] && return
+>
+>     tput cnorm
+>     stty sane
+>     echo -ne "\n${C_YELLOW}Move to (path): ${C_RESET}"
+>     read dest
+>
+>     [[ -z "$dest" ]] && { show_message "Move cancelled."; return; }
+>
+>     if mv -- "$src" "$dest" 2>/dev/null; then
+>         show_message "Moved successfully."
+>         index_dir "$CURRENT_DIR"
+>     else
+>         show_error "Move failed!"
+>     fi
+> }
+>
+> clipboard_copy() {
+>     local src="$(get_selected_path)"
+>     [[ -z "$src" ]] && return
+>
+>     echo "$src" > "$CLIPBOARD_FILE"
+>     CLIPBOARD_MODE="copy"
+>     show_message "Copied to clipboard: $(basename "$src")" 1
+> }
+>
+> clipboard_cut() {
+>     local src="$(get_selected_path)"
+>     [[ -z "$src" ]] && return
+>
+>     echo "$src" > "$CLIPBOARD_FILE"
+>     CLIPBOARD_MODE="cut"
+>     show_message "Cut to clipboard: $(basename "$src")" 1
+> }
+>
+> clipboard_paste() {
+>     if [[ ! -s "$CLIPBOARD_FILE" ]]; then
+>         show_error "Clipboard is empty!"
+>         return
+>     fi
+>
+>     local src=$(cat "$CLIPBOARD_FILE")
+>     local dest="$CURRENT_DIR/$(basename "$src")"
+>
+>     if [[ ! -e "$src" ]]; then
+>         show_error "Source no longer exists!"
+>         > "$CLIPBOARD_FILE"
+>         CLIPBOARD_MODE=""
+>         return
+>     fi
+>
+>     if [[ "$CLIPBOARD_MODE" == "copy" ]]; then
+>         if cp -r -- "$src" "$dest" 2>/dev/null; then
+>             show_message "Pasted successfully."
+>             index_dir "$CURRENT_DIR"
+>         else
+>             show_error "Paste failed!"
+>         fi
+>     elif [[ "$CLIPBOARD_MODE" == "cut" ]]; then
+>         if mv -- "$src" "$dest" 2>/dev/null; then
+>             show_message "Pasted successfully."
+>             > "$CLIPBOARD_FILE"
+>             CLIPBOARD_MODE=""
+>             index_dir "$CURRENT_DIR"
+>         else
+>             show_error "Paste failed!"
+>         fi
+>     fi
+> }
+>
+> create_new() {
+>     tput cnorm
+>     stty sane
+>     echo
+>     echo "Create: [f]ile or [d]irectory?"
+>     read -rsn1 choice
+>
+>     case "$choice" in
+>         f)
+>             echo -ne "\n${C_YELLOW}New file name: ${C_RESET}"
+>             read fname
+>             [[ -z "$fname" ]] && { show_message "Cancelled."; return; }
+>             if touch "$CURRENT_DIR/$fname" 2>/dev/null; then
+>                 show_message "File created: $fname"
+>                 index_dir "$CURRENT_DIR"
+>             else
+>                 show_error "Failed to create file!"
+>             fi
+>             ;;
+>         d)
+>             echo -ne "\n${C_YELLOW}New directory name: ${C_RESET}"
+>             read dname
+>             [[ -z "$dname" ]] && { show_message "Cancelled."; return; }
+>             if mkdir -p "$CURRENT_DIR/$dname" 2>/dev/null; then
+>                 show_message "Directory created: $dname"
+>                 index_dir "$CURRENT_DIR"
+>             else
+>                 show_error "Failed to create directory!"
+>             fi
+54c446
+<             hexedit "$file"
+---
+>             show_message "Cancelled."
+57a450,568
+>
+> search_files() {
+>     tput cnorm
+>     stty sane
+>     echo -ne "\n${C_YELLOW}Search for: ${C_RESET}"
+>     read query
+>
+>     [[ -z "$query" ]] && { show_message "Search cancelled."; return; }
+>
+>     clear
+>     echo -e "${C_CYAN}Search results for: '$query'${C_RESET}"
+>     echo "-----------------------------------"
+>     find "$CURRENT_DIR" -iname "*$query*" 2>/dev/null | less
+>
+>     stty -echo -icanon time 0 min 0
+> }
+>
+> show_info() {
+>     local path="$(get_selected_path)"
+>     [[ -z "$path" ]] && return
+>
+>     tput cnorm
+>     stty sane
+>     clear
+>     echo -e "${C_CYAN}${C_BOLD}File Information${C_RESET}"
+>     echo "-----------------------------------"
+>     echo -e "${C_YELLOW}Path:${C_RESET} $path"
+>
+>     if [[ -d "$path" ]]; then
+>         local count=$(find "$path" -mindepth 1 2>/dev/null | wc -l)
+>         echo -e "${C_YELLOW}Type:${C_RESET} Directory"
+>         echo -e "${C_YELLOW}Items:${C_RESET} $count"
+>     else
+>         local size=$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path" 2>/dev/null)
+>         local mime=$(file --mime-type -b "$path" 2>/dev/null)
+>         echo -e "${C_YELLOW}Type:${C_RESET} File"
+>         echo -e "${C_YELLOW}Size:${C_RESET} $(format_size $size) ($size bytes)"
+>         echo -e "${C_YELLOW}MIME:${C_RESET} $mime"
+>     fi
+>
+>     echo
+>     ls -lh "$path"
+>     echo
+>     read -p "Press Enter to continue..."
+>
+>     stty -echo -icanon time 0 min 0
+> }
+>
+> enter_item() {
+>     local path="$(get_selected_path)"
+>     [[ -z "$path" ]] && return
+>
+>     if [[ -d "$path" ]]; then
+>         CURRENT_DIR="$path"
+>         CURRENT_PAGE=0
+>         CURSOR_POS=0
+>         index_dir "$CURRENT_DIR"
+>     else
+>         echo "$path" >> "$SELECTION_FILE"
+>         if command -v xdg-open &>/dev/null; then
+>             xdg-open "$path" &>/dev/null &
+>         elif command -v open &>/dev/null; then
+>             open "$path" &>/dev/null &
+>         fi
+>     fi
+> }
+>
+> go_up() {
+>     local parent="$(dirname "$CURRENT_DIR")"
+>     if [[ "$parent" != "$CURRENT_DIR" ]]; then
+>         CURRENT_DIR="$parent"
+>         CURRENT_PAGE=0
+>         CURSOR_POS=0
+>         index_dir "$CURRENT_DIR"
+>     fi
+> }
+>
+> # Main loop
+> index_dir "$CURRENT_DIR"
+>
+> while true; do
+>     draw_page
+>     read -rsn1 key
+>
+>     if [[ $key == $'\x1b' ]]; then
+>         read -rsn2 -t 0.01 rest
+>         key+=$rest
+>         case "$key" in
+>             $'\x1b[A') move_cursor_up ;;
+>             $'\x1b[B') move_cursor_down ;;
+>             $'\x1b[D') go_up ;;
+>         esac
+>     elif [[ $key == "" ]]; then
+>         enter_item
+>     elif [[ $key == $'\x7f' ]]; then
+>         go_up
+>     else
+>         case "$key" in
+>             q) break ;;
+>             p) preview_file ;;
+>             e) edit_file ;;
+>             r) rename_file ;;
+>             d) delete_file ;;
+>             c) clipboard_copy ;;
+>             x) clipboard_cut ;;
+>             v) clipboard_paste ;;
+>             m) move_file ;;
+>             n) create_new ;;
+>             s) search_files ;;
+>             i) show_info ;;
+>         esac
+>     fi
+> done
+>
+> tput cnorm
+> stty sane
+> clear
+> echo -e "${C_GREEN}Session ended.${C_RESET}"
+> [[ -s "$SELECTION_FILE" ]] && echo "Selections saved in: $SELECTION_FILE"
+
+--- Diff for noonCommander/NoonCommander.sh vs noonCommander/NoonC_v2_4.sh ---
+1,2c1,2
+< #!/bin/bash
+<
 ---
 > #!/usr/bin/env bash
 > # ==============================================================================
-> # BASH Commander - Enhanced File Manager
+4c4,7
+< # Version: 2.0
+---
 > # Version: 2.4 (Refactored & Fixed)
 > # ==============================================================================
 >
 > set -u
->
+6c9
+< # Configuration
+---
 > # ------- Configuration -------
-> FILES_PER_PAGE=20
+8,11c11,13
+< INDENT="    "
+< WRAP_WIDTH=$(tput cols)
+< SELECTION_FILE=".commander_selection.tmp"
+< CLIPBOARD_FILE=".commander_clipboard.tmp"
+---
 > DEST_FAV_FILE="${HOME}/.commander_dest_favs"
 > MARKS_FILE="$(mktemp --tmpdir commander_marks.XXXXXX)"
 > CLIPBOARD_FILE="$(mktemp --tmpdir commander_clipboard.XXXXXX)"
->
+13c15
+< # Initialize
+---
 > # Globals
-> CURRENT_DIR="$(pwd)"
-> CURSOR_POS=0
-> CURRENT_PAGE=0
-> CLIPBOARD_MODE=""  # 'copy' or 'cut'
+15,16d16
+< > "$SELECTION_FILE"
+< > "$CLIPBOARD_FILE"
+19a20,27
 > WRAP_WIDTH=80
 > TOTAL_FILES=0
 > TOTAL_PAGES=1
@@ -599,26 +1033,52 @@
 > # Ensure config exists
 > mkdir -p "$(dirname "$DEST_FAV_FILE")"
 > touch "$DEST_FAV_FILE"
->
+21,23c29
+< # Terminal setup
+< stty -echo -icanon time 0 min 0
+< trap 'cleanup_exit' INT TERM EXIT
+---
 > # ------- Terminal Setup / Cleanup -------
->
-> cleanup_exit() {
+26,27c32,36
+<     tput cnorm
+<     stty sane
+---
 >     # Restore terminal
 >     stty sane || true
 >     tput cnorm || true
 >     # Remove temp files
 >     rm -f -- "$MARKS_FILE" "$CLIPBOARD_FILE" >/dev/null 2>&1 || true
->     clear
+29c38
+<     exit
+---
 >     exit 0
-> }
+30a40
 > trap cleanup_exit INT TERM EXIT
->
+32,40c42,46
+< # Color codes
+< C_RESET="\033[0m"
+< C_BOLD="\033[1m"
+< C_DIM="\033[2m"
+< C_GREEN="\033[32m"
+< C_BLUE="\033[34m"
+< C_YELLOW="\033[33m"
+< C_RED="\033[31m"
+< C_CYAN="\033[36m"
+---
 > enable_input_mode() {
 >     # Raw mode: no echo, no canonical input (byte by byte)
 >     stty -echo -icanon time 0 min 1
 >     tput civis # hide cursor
 > }
->
+42,48c48,54
+< index_dir() {
+<     local dir="$1"
+<     TMP_INDEX_FILE="/tmp/file_commander_index_$(echo "$dir" | md5sum | awk '{print $1}').tmp"
+<     find "$dir" -mindepth 1 -maxdepth 1 2>/dev/null | sort > "$TMP_INDEX_FILE"
+<     TOTAL_FILES=$(wc -l < "$TMP_INDEX_FILE")
+<     TOTAL_PAGES=$(( (TOTAL_FILES + FILES_PER_PAGE - 1) / FILES_PER_PAGE ))
+<     [[ $TOTAL_FILES -eq 0 ]] && TOTAL_PAGES=1
+---
 > disable_input_mode() {
 >     stty sane
 >     tput cnorm # show cursor
@@ -626,21 +1086,39 @@
 >
 > update_width() {
 >     WRAP_WIDTH="$(tput cols 2>/dev/null || echo 80)"
-> }
+49a56,59
 > trap 'update_width' WINCH
 > update_width
 >
 > # ------- Utilities -------
->
-> format_size() {
->     local size=$1
+53,60c63,66
+<     if (( size < 1024 )); then
+<         echo "${size}B"
+<     elif (( size < 1048576 )); then
+<         echo "$((size / 1024))K"
+<     elif (( size < 1073741824 )); then
+<         echo "$((size / 1048576))M"
+<     else
+<         echo "$((size / 1073741824))G"
+---
 >     if (( size < 1024 )); then echo "${size}B"
 >     elif (( size < 1048576 )); then awk -v s="$size" 'BEGIN{printf "%.1fK", s/1024}'
 >     elif (( size < 1073741824 )); then awk -v s="$size" 'BEGIN{printf "%.1fM", s/1048576}'
 >     else awk -v s="$size" 'BEGIN{printf "%.1fG", s/1073741824}'
->     fi
-> }
->
+64,75c70,96
+< draw_page() {
+<     clear
+<     tput civis
+<
+<     # Header
+<     echo -e "${C_BOLD}${C_CYAN}📁 BASH COMMANDER${C_RESET} - ${C_GREEN}$CURRENT_DIR${C_RESET}"
+<     echo -e "${C_DIM}Files: $TOTAL_FILES | Page: $((CURRENT_PAGE + 1))/$TOTAL_PAGES${C_RESET}"
+<
+<     # Keybindings
+<     echo -e "${C_YELLOW}↑↓${C_RESET}:Move ${C_YELLOW}Enter${C_RESET}:Open ${C_YELLOW}←${C_RESET}:Up ${C_YELLOW}[p]${C_RESET}:Preview ${C_YELLOW}[e]${C_RESET}:Edit ${C_YELLOW}[c]${C_RESET}:Copy ${C_YELLOW}[x]${C_RESET}:Cut ${C_YELLOW}[v]${C_RESET}:Paste"
+<     echo -e "${C_YELLOW}[m]${C_RESET}:Move ${C_YELLOW}[d]${C_RESET}:Delete ${C_YELLOW}[r]${C_RESET}:Rename ${C_YELLOW}[n]${C_RESET}:New ${C_YELLOW}[s]${C_RESET}:Search ${C_YELLOW}[i]${C_RESET}:Info ${C_YELLOW}[q]${C_RESET}:Quit"
+<     echo
+---
 > show_message() {
 >     local msg="$1"
 >     local duration="${2:-1.5}"
@@ -668,28 +1146,76 @@
 >
 > index_dir() {
 >     local dir="$1"
->
+77,82c98,99
+<     # Clipboard status
+<     if [[ -s "$CLIPBOARD_FILE" ]]; then
+<         local clip_item=$(cat "$CLIPBOARD_FILE")
+<         echo -e "${C_BLUE}📋 Clipboard [$CLIPBOARD_MODE]: $(basename "$clip_item")${C_RESET}"
+<         echo
+<     fi
+---
 >     # Enable nullglob so empty dirs don't return "*"
 >     shopt -s nullglob dotglob
->
+84,85c101,106
+<     START=$((CURRENT_PAGE * FILES_PER_PAGE + 1))
+<     END=$((START + FILES_PER_PAGE - 1))
+---
 >     # Read all files into the FILES array safely
 >     # We use find to separate by null, then sort, then mapfile to array
 >     FILES=()
 >     while IFS=  read -r -d $'\0'; do
 >         FILES+=("$REPLY")
 >     done < <(find "$dir" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z)
->
+87,111c108
+<     awk -v s="$START" -v e="$END" -v c="$CURSOR_POS" -v w="$WRAP_WIDTH" -v base="$CURRENT_DIR" '
+<     NR >= s && NR <= e {
+<         path = $0;
+<         fname = substr(path, length(base) + 2);
+<         prefix = (NR - s == c ? "> " : "  ");
+<
+<         # Show directory indicator
+<         cmd = "test -d \"" path "\"";
+<         if (system(cmd) == 0) {
+<             fname = fname "/";
+<         }
+<
+<         while (length(fname) > w - 4) {
+<             print prefix substr(fname,1,w-4);
+<             fname = substr(fname,w-3);
+<             prefix = "  '"$INDENT"'";
+<         }
+<         print prefix fname;
+<     }' "$TMP_INDEX_FILE"
+<
+<     # Show empty directory message
+<     if [[ $TOTAL_FILES -eq 0 ]]; then
+<         echo -e "  ${C_DIM}(Empty directory)${C_RESET}"
+<     fi
+< }
+---
 >     TOTAL_FILES=${#FILES[@]}
->
+113,118c110,113
+< move_cursor_up() {
+<     if (( CURSOR_POS > 0 )); then
+<         ((CURSOR_POS--))
+<     elif (( CURRENT_PAGE > 0 )); then
+<         ((CURRENT_PAGE--))
+<         CURSOR_POS=$((FILES_PER_PAGE - 1))
+---
 >     if (( TOTAL_FILES == 0 )); then
 >         TOTAL_PAGES=1
 >     else
 >         TOTAL_PAGES=$(( (TOTAL_FILES + FILES_PER_PAGE - 1) / FILES_PER_PAGE ))
-8,9c115,174
-<     mime=$(file --mime-type -b "$file")
-<     tput cnorm; stty sane
+120d114
+< }
+122,127c116,129
+< move_cursor_down() {
+<     if (( CURSOR_POS < FILES_PER_PAGE - 1 && CURSOR_POS + CURRENT_PAGE * FILES_PER_PAGE < TOTAL_FILES - 1 )); then
+<         ((CURSOR_POS++))
+<     elif (( CURRENT_PAGE < TOTAL_PAGES - 1 )); then
+<         ((CURRENT_PAGE++))
+<         CURSOR_POS=0
 ---
->
 >     # Bounds checking
 >     if (( CURRENT_PAGE >= TOTAL_PAGES )); then CURRENT_PAGE=$((TOTAL_PAGES - 1)); fi
 >     if (( CURRENT_PAGE < 0 )); then CURRENT_PAGE=0; fi
@@ -704,23 +1230,39 @@
 >         else
 >             CURSOR_POS=0
 >         fi
->     fi
-> }
->
-> get_selected_path() {
+132,133c134,137
+<     local line=$((CURRENT_PAGE * FILES_PER_PAGE + CURSOR_POS + 1))
+<     sed -n "${line}p" "$TMP_INDEX_FILE"
+---
 >     if (( TOTAL_FILES == 0 )); then echo ""; return; fi
 >     local index=$(( CURRENT_PAGE * FILES_PER_PAGE + CURSOR_POS ))
 >     if (( index < 0 || index >= TOTAL_FILES )); then echo ""; return; fi
 >     echo "${FILES[$index]}"
-> }
->
+136,143c140,144
+< show_message() {
+<     local msg="$1"
+<     local duration="${2:-2}"
+<     tput cnorm
+<     stty sane
+<     echo -e "\n${C_GREEN}${msg}${C_RESET}"
+<     sleep "$duration"
+<     stty -echo -icanon time 0 min 0
+---
 > # ------- Marks System -------
 >
 > is_marked() {
 >     local path="$1"
 >     grep -Fxq -- "$path" "$MARKS_FILE" 2>/dev/null
-> }
->
+146,153c147,156
+< show_error() {
+<     local msg="$1"
+<     local duration="${2:-2}"
+<     tput cnorm
+<     stty sane
+<     echo -e "\n${C_RED}${msg}${C_RESET}"
+<     sleep "$duration"
+<     stty -echo -icanon time 0 min 0
+---
 > toggle_mark() {
 >     local path="$1"
 >     if is_marked "$path"; then
@@ -731,14 +1273,26 @@
 >         # Add line
 >         printf '%s\n' "$path" >> "$MARKS_FILE"
 >     fi
-> }
->
+156,162c159,163
+< preview_file() {
+<     local file="$(get_selected_path)"
+<     [[ -z "$file" ]] && return
+<
+<     if [[ -d "$file" ]]; then
+<         show_error "'$file' is a directory."
+<         return
+---
 > get_marked_array() {
 >     local -n out_arr=$1
 >     out_arr=()
 >     if [[ -s "$MARKS_FILE" ]]; then
 >         mapfile -t out_arr < "$MARKS_FILE"
->     fi
+164,167c165,174
+<
+<     local mime=$(file --mime-type -b "$file" 2>/dev/null)
+<     tput cnorm
+<     stty sane
+---
 > }
 >
 > unmark_all() {
@@ -749,33 +1303,62 @@
 > # ------- UI / Drawing -------
 >
 > draw_page() {
-11,34c176,354
-<     echo "Previewing: $file"
-<     echo "---------------------------"
+169,170d175
+<     echo -e "${C_CYAN}${C_BOLD}Previewing:${C_RESET} $file"
+<     echo "-----------------------------------"
+172,222c177,199
 <     case "$mime" in
 <         text/*)
-<             less "$file"
+<             if command -v bat &>/dev/null; then
+<                 bat --style=plain "$file"
+<             else
+<                 less "$file"
+<             fi
 <             ;;
 <         image/*)
-<             identify "$file" 2>/dev/null || file "$file"
+<             if command -v identify &>/dev/null; then
+<                 identify "$file" 2>/dev/null
+<             else
+<                 file "$file"
+<             fi
+<             echo
 <             read -p "Press Enter to continue..."
 <             ;;
 <         application/pdf)
-<             pdftotext "$file" - | less
+<             if command -v pdftotext &>/dev/null; then
+<                 pdftotext "$file" - | less
+<             else
+<                 echo "pdftotext not found. Install poppler-utils."
+<                 read -p "Press Enter to continue..."
+<             fi
 <             ;;
 <         audio/*|video/*)
-<             ffprobe "$file" 2>&1 | less
+<             if command -v ffprobe &>/dev/null; then
+<                 ffprobe "$file" 2>&1 | less
+<             elif command -v mediainfo &>/dev/null; then
+<                 mediainfo "$file" | less
+<             else
+<                 file "$file"
+<                 read -p "Press Enter to continue..."
+<             fi
 <             ;;
-<         application/zip)
-<             unzip -l "$file" | less
+<         application/zip|application/x-tar|application/gzip)
+<             if command -v unzip &>/dev/null && [[ "$mime" == "application/zip" ]]; then
+<                 unzip -l "$file" | less
+<             elif command -v tar &>/dev/null; then
+<                 tar -tzf "$file" 2>/dev/null | less || tar -tJf "$file" 2>/dev/null | less
+<             else
+<                 file "$file"
+<                 read -p "Press Enter to continue..."
+<             fi
 <             ;;
 <         *)
 <             echo "Binary or unknown filetype. Hex preview:"
-<             xxd "$file" | less
-<             ;;
-<     esac
+<             if command -v xxd &>/dev/null; then
+<                 xxd "$file" | head -n 100 | less
+<             else
+<                 hexdump -C "$file" | head -n 100 | less
 ---
->
 >     # Header
 >     echo -e "\033[1m\033[36m📁 BASH COMMANDER\033[0m - \033[32m$CURRENT_DIR\033[0m"
 >     echo -e "\033[2mFiles: $TOTAL_FILES | Page: $((CURRENT_PAGE + 1))/$TOTAL_PAGES\033[0m"
@@ -799,8 +1382,22 @@
 >             # Cursor logic
 >             if (( i == start + CURSOR_POS )); then
 >                 indicator="\033[1m\033[36m> "
->             fi
->
+224,229d200
+<             ;;
+<     esac
+<
+<     stty -echo -icanon time 0 min 0
+<     index_dir "$CURRENT_DIR"
+< }
+231,237c202,217
+< edit_file() {
+<     local file="$(get_selected_path)"
+<     [[ -z "$file" ]] && return
+<
+<     if [[ -d "$file" ]]; then
+<         show_error "'$file' is a directory."
+<         return
+---
 >             # Mark logic
 >             local mark_char=" "
 >             if is_marked "$f"; then mark_char="*"; fi
@@ -817,13 +1414,40 @@
 >             # Print the line
 >             printf "${indicator}[%s] ${decoration}%s\033[0m\n" "$mark_char" "$fname"
 >         done
->     fi
+238a219,223
 >
 >     # Footer / Status
 >     local rows_used=$(( end - start + 1 ))
 >     if (( rows_used < 0 )); then rows_used=0; fi
 >     local remaining_lines=$(( FILES_PER_PAGE - rows_used ))
->
+240,265c225,281
+<     local mime=$(file --mime-type -b "$file" 2>/dev/null)
+<     tput cnorm
+<     stty sane
+<     clear
+<
+<     # Use EDITOR environment variable or default to nano
+<     local editor="${EDITOR:-nano}"
+<
+<     case "$mime" in
+<         text/*)
+<             "$editor" "$file"
+<             ;;
+<         *)
+<             echo "Binary file detected."
+<             echo -n "Edit with hex editor? [y/N]: "
+<             read ans
+<             if [[ "$ans" == [yY] ]]; then
+<                 if command -v hexedit &>/dev/null; then
+<                     hexedit "$file"
+<                 elif command -v xxd &>/dev/null; then
+<                     xxd "$file" > /tmp/hex_edit.tmp
+<                     "$editor" /tmp/hex_edit.tmp
+<                     echo -n "Save changes? [y/N]: "
+<                     read save
+<                     [[ "$save" == [yY] ]] && xxd -r /tmp/hex_edit.tmp > "$file"
+<                     rm -f /tmp/hex_edit.tmp
+---
 >     for (( k=0; k<remaining_lines; k++ )); do echo; done
 >
 >     echo "--------------------------------------------------------------------------------"
@@ -881,9 +1505,20 @@
 >                 if [[ -z "$userpath" ]]; then dest_dir="$CURRENT_DIR"; else dest_dir="$userpath"; fi
 >                 if [[ ! -d "$dest_dir" ]]; then
 >                      echo "Invalid directory!"; sleep 1;
->                 else
+267,268c283
+<                     echo "No hex editor available."
+<                     read -p "Press Enter to continue..."
+---
 >                      break
->                 fi
+270,276c285,296
+<             fi
+<             ;;
+<     esac
+<
+<     stty -echo -icanon time 0 min 0
+<     index_dir "$CURRENT_DIR"
+< }
+---
 >                 ;;
 >             *)
 >                 if [[ "$act" =~ ^[0-9]+$ ]]; then
@@ -896,17 +1531,54 @@
 >                 ;;
 >         esac
 >     done
->
+278,300c298,299
+< rename_file() {
+<     local src="$(get_selected_path)"
+<     [[ -z "$src" ]] && return
+<
+<     tput cnorm
+<     stty sane
+<     echo -ne "\n${C_YELLOW}Rename '$(basename "$src")' to: ${C_RESET}"
+<     read newname
+<
+<     if [[ -z "$newname" ]]; then
+<         show_message "Rename cancelled."
+<         return
+<     fi
+<
+<     local dest="$(dirname "$src")/$newname"
+<     if [[ -e "$dest" ]]; then
+<         show_error "File already exists!"
+<     elif mv -- "$src" "$dest" 2>/dev/null; then
+<         show_message "Renamed successfully."
+<         index_dir "$CURRENT_DIR"
+<     else
+<         show_error "Rename failed!"
+<     fi
+---
 >     enable_input_mode
 >     echo "$dest_dir"
-> }
->
+303,304c302,306
+< delete_file() {
+<     local path="$(get_selected_path)"
+---
 > # ------- Actions -------
 >
 > enter_item() {
 >     local path
 >     path="$(get_selected_path)"
->     [[ -z "$path" ]] && return
+306,315c308,320
+<
+<     tput cnorm
+<     stty sane
+<     echo -ne "\n${C_RED}Delete '$(basename "$path")'? [y/N]: ${C_RESET}"
+<     read ans
+<
+<     if [[ "$ans" == [yY] ]]; then
+<         if rm -rf -- "$path" 2>/dev/null; then
+<             show_message "Deleted successfully."
+<             index_dir "$CURRENT_DIR"
+---
 >
 >     if [[ -d "$path" ]]; then
 >         CURRENT_DIR="$path"
@@ -920,13 +1592,30 @@
 >             xdg-open "$path" >/dev/null 2>&1
 >         elif command -v open &>/dev/null; then
 >             open "$path" >/dev/null 2>&1
->         else
+317c322
+<             show_error "Delete failed!"
+---
 >             ${EDITOR:-nano} "$path"
->         fi
+319,320c324
+<     else
+<         show_message "Delete cancelled."
+---
 >         enable_input_mode
->     fi
-> }
->
+324,336c328,334
+< copy_file() {
+<     local src="$(get_selected_path)"
+<     [[ -z "$src" ]] && return
+<
+<     tput cnorm
+<     stty sane
+<     echo -ne "\n${C_YELLOW}Copy to (path): ${C_RESET}"
+<     read dest
+<
+<     [[ -z "$dest" ]] && { show_message "Copy cancelled."; return; }
+<
+<     if cp -r -- "$src" "$dest" 2>/dev/null; then
+<         show_message "Copied successfully."
+---
 > go_up() {
 >     local parent
 >     parent="$(dirname "$CURRENT_DIR")"
@@ -934,7 +1623,7 @@
 >         CURRENT_DIR="$parent"
 >         CURRENT_PAGE=0
 >         CURSOR_POS=0
->         index_dir "$CURRENT_DIR"
+337a336,349
 >     fi
 > }
 >
@@ -949,22 +1638,21 @@
 >     echo "----------------"
 >     if command -v bat &>/dev/null; then
 >         bat --style=plain --paging=always --color=always "$file"
->     else
+339c351
+<         show_error "Copy failed!"
+---
 >         less "$file"
->     fi
+340a353,354
 >     enable_input_mode
 >     draw_page # force redraw
-37,41c357,435
-< edit_file() {
-<     local file="$(get_selected_path)"
-<     if [[ -d "$file" ]]; then
-<         echo "'$file' is a directory."
-<         sleep 1
+343,344c357,359
+< move_file() {
+<     local src="$(get_selected_path)"
 ---
 > rename_file() {
 >     local src
 >     src="$(get_selected_path)"
->     [[ -z "$src" ]] && return
+345a361,372
 >
 >     disable_input_mode
 >     # Restore cursor for input
@@ -977,18 +1665,38 @@
 >     echo "Rename '$fname' to:"
 >     tput cup $(($(tput lines)-1)) 0
 >     read -r -e -i "$fname" newname
->
+347,358c374,375
+<     tput cnorm
+<     stty sane
+<     echo -ne "\n${C_YELLOW}Move to (path): ${C_RESET}"
+<     read dest
+<
+<     [[ -z "$dest" ]] && { show_message "Move cancelled."; return; }
+<
+<     if mv -- "$src" "$dest" 2>/dev/null; then
+<         show_message "Moved successfully."
+<         index_dir "$CURRENT_DIR"
+<     else
+<         show_error "Move failed!"
+---
 >     if [[ -n "$newname" && "$newname" != "$fname" ]]; then
 >         mv -n "$src" "$(dirname "$src")/$newname"
->     fi
+359a377,378
 >     enable_input_mode
 >     index_dir "$CURRENT_DIR"
-> }
->
+362,363c381,383
+< clipboard_copy() {
+<     local src="$(get_selected_path)"
+---
 > delete_file() {
 >     local src
 >     src="$(get_selected_path)"
->     [[ -z "$src" ]] && return
+365,368c385,410
+<
+<     echo "$src" > "$CLIPBOARD_FILE"
+<     CLIPBOARD_MODE="copy"
+<     show_message "Copied to clipboard: $(basename "$src")" 1
+---
 >
 >     disable_input_mode
 >     tput cup $(($(tput lines)-1)) 0
@@ -1015,19 +1723,29 @@
 >     fi
 >     enable_input_mode
 >     index_dir "$CURRENT_DIR"
-> }
->
+371,372c413,416
+< clipboard_cut() {
+<     local src="$(get_selected_path)"
+---
 > clipboard_action() {
 >     local action="$1" # copy or cut
 >     local src
 >     src="$(get_selected_path)"
->     [[ -z "$src" ]] && return
+374c418
+<
+---
 >
->     echo "$src" > "$CLIPBOARD_FILE"
+376,377c420,421
+<     CLIPBOARD_MODE="cut"
+<     show_message "Cut to clipboard: $(basename "$src")" 1
+---
 >     CLIPBOARD_MODE="$action"
 >     show_message "Selected for $action"
-> }
->
+380,382c424,435
+< clipboard_paste() {
+<     if [[ ! -s "$CLIPBOARD_FILE" ]]; then
+<         show_error "Clipboard is empty!"
+---
 > paste_action() {
 >     [[ ! -s "$CLIPBOARD_FILE" ]] && { show_error "Clipboard empty"; return; }
 >     local src
@@ -1040,9 +1758,14 @@
 >
 >     if [[ -e "$dest" ]]; then
 >         show_error "Destination exists!"
-44,45c438,501
-<     mime=$(file --mime-type -b "$file")
-<     tput cnorm; stty sane
+385,391c438,445
+<
+<     local src=$(cat "$CLIPBOARD_FILE")
+<     local dest="$CURRENT_DIR/$(basename "$src")"
+<
+<     if [[ ! -e "$src" ]]; then
+<         show_error "Source no longer exists!"
+<         > "$CLIPBOARD_FILE"
 ---
 >
 >     if [[ "$CLIPBOARD_MODE" == "copy" ]]; then
@@ -1052,8 +1775,9 @@
 >         mv "$src" "$dest"
 >         show_message "Moved"
 >         : > "$CLIPBOARD_FILE" # clear clipboard
->         CLIPBOARD_MODE=""
->     fi
+393d446
+<         return
+394a448,456
 >     index_dir "$CURRENT_DIR"
 > }
 >
@@ -1063,7 +1787,20 @@
 >     local mode="$1" # C (copy), M (move), D (delete)
 >     local marked=()
 >     get_marked_array marked
->
+396,407c458,469
+<     if [[ "$CLIPBOARD_MODE" == "copy" ]]; then
+<         if cp -r -- "$src" "$dest" 2>/dev/null; then
+<             show_message "Pasted successfully."
+<             index_dir "$CURRENT_DIR"
+<         else
+<             show_error "Paste failed!"
+<         fi
+<     elif [[ "$CLIPBOARD_MODE" == "cut" ]]; then
+<         if mv -- "$src" "$dest" 2>/dev/null; then
+<             show_message "Pasted successfully."
+<             > "$CLIPBOARD_FILE"
+<             CLIPBOARD_MODE=""
+---
 >     if (( ${#marked[@]} == 0 )); then
 >         show_error "No items marked"
 >         return
@@ -1076,11 +1813,50 @@
 >         if [[ "$ans" =~ ^[yY]$ ]]; then
 >             for f in "${marked[@]}"; do rm -rf "$f"; done
 >             unmark_all
->             index_dir "$CURRENT_DIR"
->         fi
+409,410d470
+<         else
+<             show_error "Paste failed!"
+411a472
 >         return
->     fi
->
+413d473
+< }
+415,449c475,489
+< create_new() {
+<     tput cnorm
+<     stty sane
+<     echo
+<     echo "Create: [f]ile or [d]irectory?"
+<     read -rsn1 choice
+<
+<     case "$choice" in
+<         f)
+<             echo -ne "\n${C_YELLOW}New file name: ${C_RESET}"
+<             read fname
+<             [[ -z "$fname" ]] && { show_message "Cancelled."; return; }
+<             if touch "$CURRENT_DIR/$fname" 2>/dev/null; then
+<                 show_message "File created: $fname"
+<                 index_dir "$CURRENT_DIR"
+<             else
+<                 show_error "Failed to create file!"
+<             fi
+<             ;;
+<         d)
+<             echo -ne "\n${C_YELLOW}New directory name: ${C_RESET}"
+<             read dname
+<             [[ -z "$dname" ]] && { show_message "Cancelled."; return; }
+<             if mkdir -p "$CURRENT_DIR/$dname" 2>/dev/null; then
+<                 show_message "Directory created: $dname"
+<                 index_dir "$CURRENT_DIR"
+<             else
+<                 show_error "Failed to create directory!"
+<             fi
+<             ;;
+<         *)
+<             show_message "Cancelled."
+<             ;;
+<     esac
+< }
+---
 >     # For Copy/Move, get destination
 >     local dest
 >     dest="$(choose_destination)"
@@ -1096,39 +1872,89 @@
 >             mv -- "$src" "$dest/$rel_name" 2>/dev/null && ((count++))
 >         fi
 >     done
->
+451,464c491,493
+< search_files() {
+<     tput cnorm
+<     stty sane
+<     echo -ne "\n${C_YELLOW}Search for: ${C_RESET}"
+<     read query
+<
+<     [[ -z "$query" ]] && { show_message "Search cancelled."; return; }
+<
+<     clear
+<     echo -e "${C_CYAN}Search results for: '$query'${C_RESET}"
+<     echo "-----------------------------------"
+<     find "$CURRENT_DIR" -iname "*$query*" 2>/dev/null | less
+<
+<     stty -echo -icanon time 0 min 0
+---
 >     [[ "$mode" == "M" ]] && unmark_all
 >     index_dir "$CURRENT_DIR"
 >     show_message "Processed $count items."
-> }
->
-> show_info() {
+468,469c497,499
+<     local path="$(get_selected_path)"
+<     [[ -z "$path" ]] && return
+---
 >     local src
 >     src="$(get_selected_path)"
 >     [[ -z "$src" ]] && return
->
+471,472c501
+<     tput cnorm
+<     stty sane
+---
 >     disable_input_mode
-47,54c503,587
-<     echo "Editing: $file"
-<     echo "---------------------------"
-<     case "$mime" in
-<         text/*)
-<             nano "$file"
-<             ;;
-<         *)
-<             hexedit "$file"
+474,489c503,504
+<     echo -e "${C_CYAN}${C_BOLD}File Information${C_RESET}"
+<     echo "-----------------------------------"
+<     echo -e "${C_YELLOW}Path:${C_RESET} $path"
+<
+<     if [[ -d "$path" ]]; then
+<         local count=$(find "$path" -mindepth 1 2>/dev/null | wc -l)
+<         echo -e "${C_YELLOW}Type:${C_RESET} Directory"
+<         echo -e "${C_YELLOW}Items:${C_RESET} $count"
+<     else
+<         local size=$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path" 2>/dev/null)
+<         local mime=$(file --mime-type -b "$path" 2>/dev/null)
+<         echo -e "${C_YELLOW}Type:${C_RESET} File"
+<         echo -e "${C_YELLOW}Size:${C_RESET} $(format_size $size) ($size bytes)"
+<         echo -e "${C_YELLOW}MIME:${C_RESET} $mime"
+<     fi
+<
 ---
 >     echo -e "\033[1mFile Info\033[0m"
 >     ls -ldh "$src"
->     echo
+491c506
+<     ls -lh "$path"
+---
 >     file "$src"
->     echo
+493,495c508,511
+<     read -p "Press Enter to continue..."
+<
+<     stty -echo -icanon time 0 min 0
+---
 >     stat "$src" 2>/dev/null
 >     echo
 >     read -rp "Press Enter..."
 >     enable_input_mode
-> }
->
+498,514c514,541
+< enter_item() {
+<     local path="$(get_selected_path)"
+<     [[ -z "$path" ]] && return
+<
+<     if [[ -d "$path" ]]; then
+<         CURRENT_DIR="$path"
+<         CURRENT_PAGE=0
+<         CURSOR_POS=0
+<         index_dir "$CURRENT_DIR"
+<     else
+<         echo "$path" >> "$SELECTION_FILE"
+<         if command -v xdg-open &>/dev/null; then
+<             xdg-open "$path" &>/dev/null &
+<         elif command -v open &>/dev/null; then
+<             open "$path" &>/dev/null &
+<         fi
+<     fi
+---
 > show_help() {
 >     disable_input_mode
 >     clear
@@ -1157,16 +1983,29 @@
 > EOF
 >     read -rp "Press Enter..."
 >     enable_input_mode
-> }
->
+517,525c544
+< go_up() {
+<     local parent="$(dirname "$CURRENT_DIR")"
+<     if [[ "$parent" != "$CURRENT_DIR" ]]; then
+<         CURRENT_DIR="$parent"
+<         CURRENT_PAGE=0
+<         CURSOR_POS=0
+<         index_dir "$CURRENT_DIR"
+<     fi
+< }
+---
 > # ------- Main Loop -------
->
+527c546
+< # Main loop
+---
 > enable_input_mode
-> index_dir "$CURRENT_DIR"
->
-> while true; do
->     draw_page
->
+532d550
+<     read -rsn1 key
+534,536c552,558
+<     if [[ $key == $'\x1b' ]]; then
+<         read -rsn2 -t 0.01 rest
+<         key+=$rest
+---
 >     # Read 1 byte
 >     IFS= read -rsn1 key
 >
@@ -1174,7 +2013,11 @@
 >     if [[ "$key" == $'\x1b' ]]; then
 >         read -rsn2 -t 0.01 rest || rest=""
 >         key+="$rest"
->         case "$key" in
+538,540c560,571
+<             $'\x1b[A') move_cursor_up ;;
+<             $'\x1b[B') move_cursor_down ;;
+<             $'\x1b[D') go_up ;;
+---
 >             $'\x1b[A') # Up
 >                 if (( CURSOR_POS > 0 )); then ((CURSOR_POS--));
 >                 elif (( CURRENT_PAGE > 0 )); then ((CURRENT_PAGE--)); CURSOR_POS=$((FILES_PER_PAGE-1)); fi
@@ -1187,23 +2030,43 @@
 >                 ;;
 >             $'\x1b[D') go_up ;;    # Left
 >             $'\x1b[C') enter_item ;; # Right
->         esac
+542c573,578
+<     elif [[ $key == "" ]]; then
+---
 >         continue
 >     fi
 >
 >     # Handle standard keys
 >     # Note: Enter often comes as carriage return \r in raw mode, or newline
 >     if [[ "$key" == "" || "$key" == $'\r' || "$key" == $'\n' ]]; then
->         enter_item
+544,560c580
+<     elif [[ $key == $'\x7f' ]]; then
+<         go_up
+<     else
+<         case "$key" in
+<             q) break ;;
+<             p) preview_file ;;
+<             e) edit_file ;;
+<             r) rename_file ;;
+<             d) delete_file ;;
+<             c) clipboard_copy ;;
+<             x) clipboard_cut ;;
+<             v) clipboard_paste ;;
+<             m) move_file ;;
+<             n) create_new ;;
+<             s) search_files ;;
+<             i) show_info ;;
+<         esac
+---
 >         continue
->     fi
+561a582,603
 >
 >     case "$key" in
 >         q) break ;;
 >         ' ')
 >             sel="$(get_selected_path)"
 >             [[ -n "$sel" ]] && toggle_mark "$sel"
-55a589,602
+>             ;;
 >         u) unmark_all ;;
 >         c) clipboard_action "copy" ;;
 >         x) clipboard_action "cut" ;;
@@ -1218,11 +2081,14 @@
 >         M) process_marked "M" ;;
 >         D) process_marked "D" ;;
 >         g) CURRENT_PAGE=0; CURSOR_POS=0 ;;
-57c604,606
-< }
+>     esac
+564,568c606
+< tput cnorm
+< stty sane
+< clear
+< echo -e "${C_GREEN}Session ended.${C_RESET}"
+< [[ -s "$SELECTION_FILE" ]] && echo "Selections saved in: $SELECTION_FILE"
 ---
-> done
->
 > cleanup_exit
 
 --- Diff for noonCommander/NoonC_v2_4.sh vs noonCommander/NoonC_v3_0.sh ---
@@ -3503,14 +4369,10 @@
 ---
 > cleanup_exit 0
 
---- Diff for noonCommander/NoonC_v4_5.sh vs noonCommander/NoonCommander.sh ---
-1,2c1,2
-< #!/usr/bin/env bash
+--- Diff for noonCommander/NoonC_v4_5.sh vs noonCommander/NoonCv5.sh ---
+2d1
 < # ==============================================================================
----
-> #!/bin/bash
->
-4,18c4
+4,10c3,4
 < # Version: 3.7 (Interactive clipboard for single + multiple (marked) items)
 < # - copy/cut (c/x) selects one item or all marked items
 < # - navigate to destination and press v to paste
@@ -3518,51 +4380,48 @@
 < # ==============================================================================
 <
 < set -uo pipefail
-<
-< # ------- Configuration -------
+---
+> # Version: 2.1 (improved)
+> set -euo pipefail
+13,21c7,12
 < EDITOR=leafpad
 < readonly FILES_PER_PAGE=20
 < readonly DEST_FAV_FILE="${HOME}/.commander_dest_favs"
 < readonly MARKS_FILE="$(mktemp --tmpdir commander_marks.XXXXXX)"
 < readonly CLIPBOARD_FILE="$(mktemp --tmpdir commander_clipboard.XXXXXX)"
 < readonly FILES_CACHE="$(mktemp --tmpdir commander_files.XXXXXX)"
----
-> # Version: 2.0
-20,21c6,11
+<
 < # Capture initial terminal state
 < readonly INITIAL_STTY_SETTINGS=$(stty -g 2>/dev/null || echo "")
 ---
-> # Configuration
 > FILES_PER_PAGE=20
 > INDENT="    "
-> WRAP_WIDTH=$(tput cols)
-> SELECTION_FILE=".commander_selection.tmp"
-> CLIPBOARD_FILE=".commander_clipboard.tmp"
-23c13
+> SELECTION_FILE="$(mktemp --tmpdir commander_selection.XXXXXX)"
+> CLIPBOARD_FILE="$(mktemp --tmpdir commander_clipboard.XXXXXX)"
+> TMP_INDEX_FILE="$(mktemp --tmpdir commander_index.XXXXXX)"
+> MARKS_FILE="$(mktemp --tmpdir commander_marks.XXXXXX)"
+23c14
 < # Globals
 ---
-> # Initialize
-24a15,16
-> > "$SELECTION_FILE"
-> > "$CLIPBOARD_FILE"
-27,34c19
+> # state
+27,28c18,19
 < CLIPBOARD_MODE=""
 < WRAP_WIDTH=80
-< TOTAL_FILES=0
-< TOTAL_PAGES=1
-<
+---
+> CLIPBOARD_MODE=""  # 'copy' or 'cut'
+> WRAP_WIDTH="$(tput cols 2>/dev/null || echo 80)"
+30a22
+> FILES=()   # bash array of indexed files
+32,37c24
 < # Ensure config exists
 < mkdir -p "$(dirname "$DEST_FAV_FILE")"
 < touch "$DEST_FAV_FILE"
----
-> CLIPBOARD_MODE=""  # 'copy' or 'cut'
-36c21,23
+<
 < # ------- Terminal Setup / Cleanup -------
+<
 ---
-> # Terminal setup
-> stty -echo -icanon time 0 min 0
-> trap 'cleanup_exit' INT TERM EXIT
-39,46c26,29
+> # Terminal setup / cleanup
+39,46c26,30
 <     trap - INT TERM EXIT
 <     tput cnorm 2>/dev/null || true
 <     tput rmcup 2>/dev/null || true
@@ -3572,161 +4431,80 @@
 <     rm -f -- "$MARKS_FILE" "$CLIPBOARD_FILE" "$FILES_CACHE" 2>/dev/null || true
 <     exit "${1:-0}"
 ---
->     tput cnorm
->     stty sane
+>     stty sane || true
+>     tput cnorm || true
+>     rm -f -- "$SELECTION_FILE" "$CLIPBOARD_FILE" "$TMP_INDEX_FILE" "$MARKS_FILE" >/dev/null 2>&1 || true
 >     clear
 >     exit
-49,50c32,49
+47a32
+> trap cleanup_exit INT TERM EXIT
+49,51c34
 < trap 'cleanup_exit 1' INT TERM
 < trap 'cleanup_exit 0' EXIT
+<
 ---
-> # Color codes
-> C_RESET="\033[0m"
-> C_BOLD="\033[1m"
-> C_DIM="\033[2m"
-> C_GREEN="\033[32m"
-> C_BLUE="\033[34m"
-> C_YELLOW="\033[33m"
-> C_RED="\033[31m"
-> C_CYAN="\033[36m"
->
-> index_dir() {
->     local dir="$1"
->     TMP_INDEX_FILE="/tmp/file_commander_index_$(echo "$dir" | md5sum | awk '{print $1}').tmp"
->     find "$dir" -mindepth 1 -maxdepth 1 2>/dev/null | sort > "$TMP_INDEX_FILE"
->     TOTAL_FILES=$(wc -l < "$TMP_INDEX_FILE")
->     TOTAL_PAGES=$(( (TOTAL_FILES + FILES_PER_PAGE - 1) / FILES_PER_PAGE ))
->     [[ $TOTAL_FILES -eq 0 ]] && TOTAL_PAGES=1
-> }
-52,54c51,61
-< enable_input_mode() {
+> # put terminal into raw-ish mode for single-key input (and restore on exit)
+53,54c36,37
 <     stty -echo -icanon time 0 min 1 2>/dev/null || true
 <     tput civis 2>/dev/null || true
+---
+>     stty -echo -icanon time 0 min 0
+>     tput civis
+56d38
+<
+58,59c40,41
+<     stty echo icanon 2>/dev/null || true
+<     tput cnorm 2>/dev/null || true
+---
+>     stty sane
+>     tput cnorm
+60a43
+> enable_input_mode
+62c45,46
+< update_width() {
+---
+> # Update wrap width on resize
+> on_resize() {
+65,69c49
+< trap 'update_width' WINCH
+<
+< # Start UI
+< tput smcup 2>/dev/null || true
+< update_width
+---
+> trap 'on_resize' WINCH
+72,84c52,62
+<
+< show_message() {
+<     local msg="$1"
+<     local duration="${2:-1.2}"
+<     local color="${3:-32}"
+<     tput cup "$(($(tput lines) - 1))" 0 2>/dev/null || true
+<     tput el 2>/dev/null || true
+<     echo -ne "\033[1;${color}m ${msg}\033[0m"
+<     sleep "$duration"
+< }
+<
+< show_error() {
+<     show_message "$1" "${2:-1.5}" "31"
 ---
 > format_size() {
 >     local size=$1
 >     if (( size < 1024 )); then
 >         echo "${size}B"
 >     elif (( size < 1048576 )); then
->         echo "$((size / 1024))K"
+>         awk -v s="$size" 'BEGIN{printf "%.1fK", s/1024}'
 >     elif (( size < 1073741824 )); then
->         echo "$((size / 1048576))M"
+>         awk -v s="$size" 'BEGIN{printf "%.1fM", s/1048576}'
 >     else
->         echo "$((size / 1073741824))G"
+>         awk -v s="$size" 'BEGIN{printf "%.1fG", s/1073741824}'
 >     fi
-57,59c64,110
-< disable_input_mode() {
-<     stty echo icanon 2>/dev/null || true
-<     tput cnorm 2>/dev/null || true
----
-> draw_page() {
->     clear
->     tput civis
->
->     # Header
->     echo -e "${C_BOLD}${C_CYAN}📁 BASH COMMANDER${C_RESET} - ${C_GREEN}$CURRENT_DIR${C_RESET}"
->     echo -e "${C_DIM}Files: $TOTAL_FILES | Page: $((CURRENT_PAGE + 1))/$TOTAL_PAGES${C_RESET}"
->
->     # Keybindings
->     echo -e "${C_YELLOW}↑↓${C_RESET}:Move ${C_YELLOW}Enter${C_RESET}:Open ${C_YELLOW}←${C_RESET}:Up ${C_YELLOW}[p]${C_RESET}:Preview ${C_YELLOW}[e]${C_RESET}:Edit ${C_YELLOW}[c]${C_RESET}:Copy ${C_YELLOW}[x]${C_RESET}:Cut ${C_YELLOW}[v]${C_RESET}:Paste"
->     echo -e "${C_YELLOW}[m]${C_RESET}:Move ${C_YELLOW}[d]${C_RESET}:Delete ${C_YELLOW}[r]${C_RESET}:Rename ${C_YELLOW}[n]${C_RESET}:New ${C_YELLOW}[s]${C_RESET}:Search ${C_YELLOW}[i]${C_RESET}:Info ${C_YELLOW}[q]${C_RESET}:Quit"
->     echo
->
->     # Clipboard status
->     if [[ -s "$CLIPBOARD_FILE" ]]; then
->         local clip_item=$(cat "$CLIPBOARD_FILE")
->         echo -e "${C_BLUE}📋 Clipboard [$CLIPBOARD_MODE]: $(basename "$clip_item")${C_RESET}"
->         echo
->     fi
->
->     START=$((CURRENT_PAGE * FILES_PER_PAGE + 1))
->     END=$((START + FILES_PER_PAGE - 1))
->
->     awk -v s="$START" -v e="$END" -v c="$CURSOR_POS" -v w="$WRAP_WIDTH" -v base="$CURRENT_DIR" '
->     NR >= s && NR <= e {
->         path = $0;
->         fname = substr(path, length(base) + 2);
->         prefix = (NR - s == c ? "> " : "  ");
->
->         # Show directory indicator
->         cmd = "test -d \"" path "\"";
->         if (system(cmd) == 0) {
->             fname = fname "/";
->         }
->
->         while (length(fname) > w - 4) {
->             print prefix substr(fname,1,w-4);
->             fname = substr(fname,w-3);
->             prefix = "  '"$INDENT"'";
->         }
->         print prefix fname;
->     }' "$TMP_INDEX_FILE"
->
->     # Show empty directory message
->     if [[ $TOTAL_FILES -eq 0 ]]; then
->         echo -e "  ${C_DIM}(Empty directory)${C_RESET}"
->     fi
-62,63c113,119
-< update_width() {
-<     WRAP_WIDTH="$(tput cols 2>/dev/null || echo 80)"
----
-> move_cursor_up() {
->     if (( CURSOR_POS > 0 )); then
->         ((CURSOR_POS--))
->     elif (( CURRENT_PAGE > 0 )); then
->         ((CURRENT_PAGE--))
->         CURSOR_POS=$((FILES_PER_PAGE - 1))
->     fi
-65d120
-< trap 'update_width' WINCH
-67,69c122,129
-< # Start UI
-< tput smcup 2>/dev/null || true
-< update_width
----
-> move_cursor_down() {
->     if (( CURSOR_POS < FILES_PER_PAGE - 1 && CURSOR_POS + CURRENT_PAGE * FILES_PER_PAGE < TOTAL_FILES - 1 )); then
->         ((CURSOR_POS++))
->     elif (( CURRENT_PAGE < TOTAL_PAGES - 1 )); then
->         ((CURRENT_PAGE++))
->         CURSOR_POS=0
->     fi
-> }
-71c131,134
-< # ------- Utilities -------
----
-> get_selected_path() {
->     local line=$((CURRENT_PAGE * FILES_PER_PAGE + CURSOR_POS + 1))
->     sed -n "${line}p" "$TMP_INDEX_FILE"
-> }
-75,79c138,141
-<     local duration="${2:-1.2}"
-<     local color="${3:-32}"
-<     tput cup "$(($(tput lines) - 1))" 0 2>/dev/null || true
-<     tput el 2>/dev/null || true
-<     echo -ne "\033[1;${color}m ${msg}\033[0m"
----
->     local duration="${2:-2}"
->     tput cnorm
->     stty sane
->     echo -e "\n${C_GREEN}${msg}${C_RESET}"
-80a143
->     stty -echo -icanon time 0 min 0
-84c147,153
-<     show_message "$1" "${2:-1.5}" "31"
----
->     local msg="$1"
->     local duration="${2:-2}"
->     tput cnorm
->     stty sane
->     echo -e "\n${C_RED}${msg}${C_RESET}"
->     sleep "$duration"
->     stty -echo -icanon time 0 min 0
-87,97c156,162
+87,88c65
 < # ------- Core Logic: Indexing -------
 <
-< index_dir() {
-<     local dir="$1"
+---
+> # Index directory safely (handles spaces/newlines)
+91,97c68,92
 <     : > "$FILES_CACHE"
 <     if find "$dir" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z 2>/dev/null | tr '\0' '\n' > "$FILES_CACHE"; then
 <         :
@@ -3735,21 +4513,44 @@
 <             | sort -k1,1r -k2 \
 <             | cut -d' ' -f2- > "$FILES_CACHE"
 ---
-> preview_file() {
->     local file="$(get_selected_path)"
->     [[ -z "$file" ]] && return
+>     : > "$TMP_INDEX_FILE"
+>     # Use find -mindepth 1 -maxdepth 1 -print0, turn into sorted newline-separated safely
+>     if ! mapfile -t -d '' FILES < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null | sort -z); then
+>         # fallback: empty
+>         FILES=()
+>     fi
 >
->     if [[ -d "$file" ]]; then
->         show_error "'$file' is a directory."
->         return
-99,111c164,228
-<
+>     # Some versions of sort -z may not behave; normalize with printf
+>     if [[ "${#FILES[@]}" -eq 0 ]]; then
+>         # Create newline-separated file list reliably
+>         IFS=$'\n' read -r -d '' -a FILES < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null | xargs -0 -n1 printf '%s\n' | sort -f | sed -z 's/\n$//' && printf '\0')
+>     fi
+>
+>     # Write to tmp index file (one per line)
+>     : > "$TMP_INDEX_FILE"
+>     for f in "${FILES[@]}"; do
+>         printf '%s\0' "$f" >> "$TMP_INDEX_FILE"
+>     done
+>
+>     TOTAL_FILES=0
+>     # count null-delimited entries
+>     if [[ -s "$TMP_INDEX_FILE" ]]; then
+>         TOTAL_FILES=$(tr -cd '\0' < "$TMP_INDEX_FILE" | wc -c)
+>     else
+>         TOTAL_FILES=0
+100,102c95,99
 <     TOTAL_FILES=$(wc -l < "$FILES_CACHE" 2>/dev/null || echo 0)
 <     TOTAL_PAGES=$(( (TOTAL_FILES + FILES_PER_PAGE - 1) / FILES_PER_PAGE ))
 <     if (( TOTAL_PAGES < 1 )); then TOTAL_PAGES=1; fi
-<
-<     if (( CURRENT_PAGE >= TOTAL_PAGES )); then CURRENT_PAGE=$((TOTAL_PAGES - 1)); fi
-<     if (( CURRENT_PAGE < 0 )); then CURRENT_PAGE=0; fi
+---
+>     if (( TOTAL_FILES == 0 )); then
+>         TOTAL_PAGES=1
+>     else
+>         TOTAL_PAGES=$(( (TOTAL_FILES + FILES_PER_PAGE - 1) / FILES_PER_PAGE ))
+>     fi
+103a101
+>     # ensure cursor/page in valid range
+106,111c104
 <
 <     # keep cursor inside available items on the page
 <     local items_on_page=$(( TOTAL_FILES - CURRENT_PAGE * FILES_PER_PAGE ))
@@ -3757,202 +4558,96 @@
 <     if (( items_on_page < 1 )); then CURSOR_POS=0
 <     elif (( CURSOR_POS >= items_on_page )); then CURSOR_POS=$((items_on_page - 1)); fi
 ---
->
->     local mime=$(file --mime-type -b "$file" 2>/dev/null)
->     tput cnorm
->     stty sane
->     clear
->     echo -e "${C_CYAN}${C_BOLD}Previewing:${C_RESET} $file"
->     echo "-----------------------------------"
->
->     case "$mime" in
->         text/*)
->             if command -v bat &>/dev/null; then
->                 bat --style=plain "$file"
->             else
->                 less "$file"
->             fi
->             ;;
->         image/*)
->             if command -v identify &>/dev/null; then
->                 identify "$file" 2>/dev/null
->             else
->                 file "$file"
->             fi
->             echo
->             read -p "Press Enter to continue..."
->             ;;
->         application/pdf)
->             if command -v pdftotext &>/dev/null; then
->                 pdftotext "$file" - | less
->             else
->                 echo "pdftotext not found. Install poppler-utils."
->                 read -p "Press Enter to continue..."
->             fi
->             ;;
->         audio/*|video/*)
->             if command -v ffprobe &>/dev/null; then
->                 ffprobe "$file" 2>&1 | less
->             elif command -v mediainfo &>/dev/null; then
->                 mediainfo "$file" | less
->             else
->                 file "$file"
->                 read -p "Press Enter to continue..."
->             fi
->             ;;
->         application/zip|application/x-tar|application/gzip)
->             if command -v unzip &>/dev/null && [[ "$mime" == "application/zip" ]]; then
->                 unzip -l "$file" | less
->             elif command -v tar &>/dev/null; then
->                 tar -tzf "$file" 2>/dev/null | less || tar -tJf "$file" 2>/dev/null | less
->             else
->                 file "$file"
->                 read -p "Press Enter to continue..."
->             fi
->             ;;
->         *)
->             echo "Binary or unknown filetype. Hex preview:"
->             if command -v xxd &>/dev/null; then
->                 xxd "$file" | head -n 100 | less
->             else
->                 hexdump -C "$file" | head -n 100 | less
->             fi
->             ;;
->     esac
->
->     stty -echo -icanon time 0 min 0
->     index_dir "$CURRENT_DIR"
-114,116c231,236
+>     if (( CURSOR_POS >= FILES_PER_PAGE )); then CURSOR_POS=$((FILES_PER_PAGE - 1)); fi
+114,120c107,113
 < get_selected_path() {
 <     if (( TOTAL_FILES == 0 )); then
 <         echo ""
----
-> edit_file() {
->     local file="$(get_selected_path)"
->     [[ -z "$file" ]] && return
->
->     if [[ -d "$file" ]]; then
->         show_error "'$file' is a directory."
-119,128c239,275
+<         return
+<     fi
 <     local index=$(( CURRENT_PAGE * FILES_PER_PAGE + CURSOR_POS + 1 ))
 <     sed -n "${index}p" "$FILES_CACHE"
-< }
-<
+---
+> read_index_entry() {
+>     # read nth (0-based) entry from TMP_INDEX_FILE
+>     local idx="$1"
+>     local out
+>     # iterate null-separated
+>     out=$(awk -v n="$idx" 'BEGIN{RS="\0"; ORS=""} NR==n+1{print $0}' "$TMP_INDEX_FILE" || true)
+>     printf '%s' "$out"
+123,124c116
 < # ------- Marks System -------
 <
-< is_marked() {
-<     local path="$1"
-<     [[ ! -s "$MARKS_FILE" ]] && return 1
-<     grep -Fxq -- "$path" "$MARKS_FILE" 2>/dev/null
 ---
->
->     local mime=$(file --mime-type -b "$file" 2>/dev/null)
->     tput cnorm
->     stty sane
->     clear
->
->     # Use EDITOR environment variable or default to nano
->     local editor="${EDITOR:-nano}"
->
->     case "$mime" in
->         text/*)
->             "$editor" "$file"
->             ;;
->         *)
->             echo "Binary file detected."
->             echo -n "Edit with hex editor? [y/N]: "
->             read ans
->             if [[ "$ans" == [yY] ]]; then
->                 if command -v hexedit &>/dev/null; then
->                     hexedit "$file"
->                 elif command -v xxd &>/dev/null; then
->                     xxd "$file" > /tmp/hex_edit.tmp
->                     "$editor" /tmp/hex_edit.tmp
->                     echo -n "Save changes? [y/N]: "
->                     read save
->                     [[ "$save" == [yY] ]] && xxd -r /tmp/hex_edit.tmp > "$file"
->                     rm -f /tmp/hex_edit.tmp
->                 else
->                     echo "No hex editor available."
->                     read -p "Press Enter to continue..."
->                 fi
->             fi
->             ;;
->     esac
->
->     stty -echo -icanon time 0 min 0
->     index_dir "$CURRENT_DIR"
-131,135c278,297
-< toggle_mark() {
-<     local path="$1"
+> # mark toggle
+127d118
+<     [[ ! -s "$MARKS_FILE" ]] && return 1
+130d120
+<
+133d122
 <     local tmp="${MARKS_FILE}.tmp"
-<     if is_marked "$path"; then
+135c124,125
 <         grep -Fxv -- "$path" "$MARKS_FILE" > "$tmp" 2>/dev/null || true
 ---
-> rename_file() {
->     local src="$(get_selected_path)"
->     [[ -z "$src" ]] && return
->
->     tput cnorm
->     stty sane
->     echo -ne "\n${C_YELLOW}Rename '$(basename "$src")' to: ${C_RESET}"
->     read newname
->
->     if [[ -z "$newname" ]]; then
->         show_message "Rename cancelled."
->         return
->     fi
->
->     local dest="$(dirname "$src")/$newname"
->     if [[ -e "$dest" ]]; then
->         show_error "File already exists!"
->     elif mv -- "$src" "$dest" 2>/dev/null; then
->         show_message "Renamed successfully."
->         index_dir "$CURRENT_DIR"
-137c299
+>         grep -Fxv -- "$path" "$MARKS_FILE" 2>/dev/null > "${MARKS_FILE}.tmp" || true
+>         mv -f "${MARKS_FILE}.tmp" "$MARKS_FILE"
+137c127
 <         { cat "$MARKS_FILE" 2>/dev/null || true; printf '%s\n' "$path"; } > "$tmp"
 ---
->         show_error "Rename failed!"
-139d300
+>         printf '%s\n' "$path" >> "$MARKS_FILE"
+139d128
 <     mv -f "$tmp" "$MARKS_FILE"
-142,145c303,320
+142,147c131,138
 < mark_all_in_dir() {
 <     cat "$FILES_CACHE" >> "$MARKS_FILE" 2>/dev/null || true
 <     if command -v sort >/dev/null 2>&1; then
 <         sort -u "$MARKS_FILE" -o "$MARKS_FILE" 2>/dev/null || true
----
-> delete_file() {
->     local path="$(get_selected_path)"
->     [[ -z "$path" ]] && return
->
->     tput cnorm
->     stty sane
->     echo -ne "\n${C_RED}Delete '$(basename "$path")'? [y/N]: ${C_RESET}"
->     read ans
->
->     if [[ "$ans" == [yY] ]]; then
->         if rm -rf -- "$path" 2>/dev/null; then
->             show_message "Deleted successfully."
->             index_dir "$CURRENT_DIR"
->         else
->             show_error "Delete failed!"
->         fi
->     else
->         show_message "Delete cancelled."
-147,156d321
+<     fi
 <     show_message "Marked all items" 0.7
-< }
+---
+> # messages (temporarily leave raw mode)
+> show_message() {
+>     local msg="$1"
+>     local duration="${2:-1.5}"
+>     disable_input_mode
+>     echo -e "\n\033[1;32m${msg}\033[0m"
+>     sleep "$duration"
+>     enable_input_mode
+149,152c140,146
 <
 < unmark_all() {
 <     : > "$MARKS_FILE"
 <     show_message "All marks cleared" 0.7
-< }
-<
+---
+> show_error() {
+>     local msg="$1"
+>     local duration="${2:-1.5}"
+>     disable_input_mode
+>     echo -e "\n\033[1;31m${msg}\033[0m" >&2
+>     sleep "$duration"
+>     enable_input_mode
+155,157c149,152
 < get_marked_count() {
 <     wc -l < "$MARKS_FILE" 2>/dev/null || echo 0
-159,174c324,337
+< }
+---
+> # ------- UI / drawing -------
+> draw_page() {
+>     clear
+>     on_resize
+159c154,162
 < # ------- UI / Drawing -------
-<
+---
+>     # header
+>     echo -e "\033[1m\033[36m📁 BASH COMMANDER\033[0m - \033[32m$CURRENT_DIR\033[0m"
+>     echo -e "\033[2mFiles: $TOTAL_FILES | Page: $((CURRENT_PAGE + 1))/$TOTAL_PAGES\033[0m"
+>
+>     # keybindings summary
+>     echo -e "\033[33m↑↓\033[0m:Move  \033[33mEnter\033[0m:Open  \033[33m←\033[0m:Up  \033[33m}space\033[0m:Mark  \033[33m[p]\033[0m:Preview  \033[33m[e]\033[0m:Edit  \033[33m[c]\033[0m:Copy  \033[33m[x]\033[0m:Cut  \033[33m[v]\033[0m:Paste"
+>     echo -e "\033[33m[m]\033[0m:Move  \033[33m[d]\033[0m:Delete  \033[33m[r]\033[0m:Rename  \033[33m[n]\033[0m:New  \033[33m[s]\033[0m:Search  \033[33m[i]\033[0m:Info  \033[33m[q]\033[0m:Quit"
+>     echo -e "\033[33m[g]\033[0m:Top  \033[33m[G]\033[0m:Bottom  \033[33m[R]\033[0m:Refresh  \033[33m[h]\033[0m:Help"
+>     echo
+161,167c164,170
 < draw_page() {
 <     tput clear
 <     tput cup 0 0
@@ -3960,29 +4655,26 @@
 <     printf "\033[2mFiles: %d | Page: %d/%d | Marked: %d\033[0m\n" \
 <         "$TOTAL_FILES" "$((CURRENT_PAGE + 1))" "$TOTAL_PAGES" "$(get_marked_count)"
 <     echo "────────────────────────────────────────────────────────────────────────────────"
-<
-<     local start=$(( CURRENT_PAGE * FILES_PER_PAGE + 1 ))
-<     local end=$(( start + FILES_PER_PAGE - 1 ))
-<     if (( end > TOTAL_FILES )); then end=$TOTAL_FILES; fi
-<
-<     if (( TOTAL_FILES == 0 )); then
-<         echo -e "   \033[2m(Empty directory)\033[0m"
 ---
-> copy_file() {
->     local src="$(get_selected_path)"
->     [[ -z "$src" ]] && return
->
->     tput cnorm
->     stty sane
->     echo -ne "\n${C_YELLOW}Copy to (path): ${C_RESET}"
->     read dest
->
->     [[ -z "$dest" ]] && { show_message "Copy cancelled."; return; }
->
->     if cp -r -- "$src" "$dest" 2>/dev/null; then
->         show_message "Copied successfully."
->         index_dir "$CURRENT_DIR"
-176,200c339
+>     # Clipboard status
+>     if [[ -s "$CLIPBOARD_FILE" ]]; then
+>         local clip_item
+>         clip_item=$(<"$CLIPBOARD_FILE")
+>         echo -e "\033[34m📋 Clipboard [$CLIPBOARD_MODE]: $(basename "$clip_item")\033[0m"
+>         echo
+>     fi
+169c172,173
+<     local start=$(( CURRENT_PAGE * FILES_PER_PAGE + 1 ))
+---
+>     # calculate start/end index (0-based)
+>     local start=$(( CURRENT_PAGE * FILES_PER_PAGE ))
+171c175
+<     if (( end > TOTAL_FILES )); then end=$TOTAL_FILES; fi
+---
+>     if (( end >= TOTAL_FILES )); then end=$((TOTAL_FILES - 1)); fi
+174,200c178,179
+<         echo -e "   \033[2m(Empty directory)\033[0m"
+<     else
 <         local line_num=0
 <         while IFS= read -r f; do
 <             local fname="$(basename "$f")"
@@ -4009,16 +4701,37 @@
 <             line_num=$((line_num + 1))
 <         done < <(sed -n "${start},${end}p" "$FILES_CACHE")
 ---
->         show_error "Copy failed!"
-201a341
-> }
-203,219c343,358
+>         echo -e "  \033[2m(Empty directory)\033[0m"
+>         return
+203,207c182,202
 <     local rows_used=$(( end - start + 1 ))
 <     if (( rows_used < 0 )); then rows_used=0; fi
 <     for (( k=0; k < (FILES_PER_PAGE - rows_used); k++ )); do echo; done
 <
 <     echo "────────────────────────────────────────────────────────────────────────────────"
-<
+---
+>     # print entries: we stored index as null-delimited in TMP_INDEX_FILE
+>     local i=0
+>     local idx=0
+>     # read entries one by one
+>     while IFS= read -r -d '' entry; do
+>         if (( idx < start )); then ((idx++)); continue; fi
+>         if (( idx > end )); then break; fi
+>
+>         local rel="${entry#$CURRENT_DIR/}"
+>         local display="$rel"
+>         # append slash for directories
+>         if [[ -d "$entry" ]]; then display="$display/"; fi
+>
+>         local prefix="  "
+>         if (( idx == start + CURSOR_POS )); then
+>             prefix="> "
+>             # highlight current
+>             printf '%s' "\033[1m\033[36m$prefix"
+>         else
+>             printf '%s' "  "
+>         fi
+209,216c204,206
 <     # show clipboard summary (single or multiple)
 <     if [[ -s "$CLIPBOARD_FILE" ]]; then
 <         local clip_count
@@ -4027,38 +4740,68 @@
 <             local clip_item
 <             clip_item=$(head -n 1 "$CLIPBOARD_FILE")
 <             printf "\033[34m📋 Clipboard [%s]: %s\033[0m\n" "$CLIPBOARD_MODE" "$(basename "$clip_item")"
-<         else
-<             printf "\033[34m📋 Clipboard [%s]: %d items\033[0m\n" "$CLIPBOARD_MODE" "$clip_count"
-<         fi
 ---
-> move_file() {
->     local src="$(get_selected_path)"
->     [[ -z "$src" ]] && return
+>         # show mark
+>         if is_marked "$entry"; then
+>             printf '[*] '
+218c208,224
+<             printf "\033[34m📋 Clipboard [%s]: %d items\033[0m\n" "$CLIPBOARD_MODE" "$clip_count"
+---
+>             printf '    '
+>         fi
 >
->     tput cnorm
->     stty sane
->     echo -ne "\n${C_YELLOW}Move to (path): ${C_RESET}"
->     read dest
+>         # wrap long names
+>         local maxw=$(( WRAP_WIDTH - 10 ))
+>         if (( maxw < 20 )); then maxw=20; fi
 >
->     [[ -z "$dest" ]] && { show_message "Move cancelled."; return; }
->
->     if mv -- "$src" "$dest" 2>/dev/null; then
->         show_message "Moved successfully."
->         index_dir "$CURRENT_DIR"
->     else
->         show_error "Move failed!"
-221,223d359
-<
+>         # use fold to wrap nicely (preserve leading indent)
+>         printf '%s' "$(echo "$display" | fold -s -w "$maxw" | sed -n '1p')"
+>         # if multiple lines, print them with indent
+>         local rest
+>         rest=$(echo "$display" | fold -s -w "$maxw" | sed -n '2,$p' || true)
+>         printf '\n'
+>         if [[ -n "$rest" ]]; then
+>             while IFS= read -r line; do
+>                 printf '      %s\n' "$line"
+>             done <<<"$rest"
+220d225
+<     fi
+222,223c227,231
 <     echo -e "\033[33m↑↓←→\033[0m Nav  \033[33mEnter\033[0m Open  \033[33mSpace\033[0m Mark  \033[33mA\033[0m All  \033[33mu\033[0m Clear"
 <     echo -e "\033[33mC/M/D\033[0m Bulk Op  \033[33mc/x/v\033[0m C/X/V  \033[33md/r\033[0m Del/Ren  \033[33mn\033[0m New  \033[33mi\033[0m Info"
-226,298c362,368
+---
+>         # reset styling for next line
+>         printf '\033[0m'
+>         ((idx++))
+>         ((i++))
+>     done <"$TMP_INDEX_FILE"
+226c234,246
 < # ------- Destination Picker (unchanged) -------
-<
+---
+> # ------- Actions -------
+> get_selected_path() {
+>     if (( TOTAL_FILES == 0 )); then
+>         printf ''
+>         return
+>     fi
+>     local global_index=$(( CURRENT_PAGE * FILES_PER_PAGE + CURSOR_POS ))
+>     if (( global_index < 0 || global_index >= TOTAL_FILES )); then
+>         printf ''
+>         return
+>     fi
+>     read_index_entry "$global_index"
+> }
+228,230c248,252
 < choose_destination() {
 <     local context_title="${1:-Select Destination}"
 <     local dest_dir=""
-<
-<     disable_input_mode
+---
+> preview_file() {
+>     local file
+>     file="$(get_selected_path)"
+>     [[ -z "$file" ]] && { show_message "No file selected."; return; }
+>     if [[ -d "$file" ]]; then show_error "'$file' is a directory."; return; fi
+233,246c255,263
 <
 <     while true; do
 <         {
@@ -4073,10 +4816,28 @@
 <                     printf "  \033[33m[%d]\033[0m %s\n" "$i" "$fav"
 <                     i=$((i + 1))
 <                 done < "$DEST_FAV_FILE"
-<             else
+---
+>     clear
+>     echo -e "\033[36m\033[1mPreviewing:\033[0m $file"
+>     echo "-----------------------------------"
+>     local mime
+>     mime=$(file --mime-type -b "$file" 2>/dev/null || echo "")
+>     case "$mime" in
+>         text/*)
+>             if command -v bat &>/dev/null; then
+>                 bat --style=plain --paging=always "$file"
+248c265,272
 <                 echo "  (No favorites yet)"
-<             fi
-<             echo
+---
+>                 less "$file"
+>             fi
+>             ;;
+>         image/*)
+>             if command -v identify &>/dev/null; then
+>                 identify "$file" 2>/dev/null | sed -n '1,200p'
+>             else
+>                 file "$file"
+251,296c275,313
 <             echo -e "\033[1mOptions:\033[0m"
 <             echo -e " [b] Browse Manual Path"
 <             echo -e " [a] Add Current Dir to Favs"
@@ -4123,17 +4884,50 @@
 <         esac
 <     done
 <
-<     enable_input_mode
-<     echo "$dest_dir"
 ---
-> clipboard_copy() {
->     local src="$(get_selected_path)"
->     [[ -z "$src" ]] && return
->
->     echo "$src" > "$CLIPBOARD_FILE"
->     CLIPBOARD_MODE="copy"
->     show_message "Copied to clipboard: $(basename "$src")" 1
-301,328c371,377
+>             read -rp "Press Enter to continue..."
+>             ;;
+>         application/pdf)
+>             if command -v pdftotext &>/dev/null; then
+>                 pdftotext "$file" - | less
+>             else
+>                 echo "Install pdftotext (poppler-utils) for PDF previews."
+>                 read -rp "Press Enter to continue..."
+>             fi
+>             ;;
+>         audio/*|video/*)
+>             if command -v ffprobe &>/dev/null; then
+>                 ffprobe -v error -show_format -show_streams "$file" 2>&1 | less
+>             elif command -v mediainfo &>/dev/null; then
+>                 mediainfo "$file" | less
+>             else
+>                 file "$file"
+>                 read -rp "Press Enter to continue..."
+>             fi
+>             ;;
+>         application/zip|application/x-tar|application/gzip)
+>             if command -v unzip &>/dev/null && [[ "$mime" == "application/zip" ]]; then
+>                 unzip -l "$file" | less
+>             elif command -v tar &>/dev/null; then
+>                 tar -tf "$file" 2>/dev/null | less
+>             else
+>                 file "$file"
+>                 read -rp "Press Enter to continue..."
+>             fi
+>             ;;
+>         *)
+>             echo "Binary or unknown filetype. Hex preview (first 100 lines):"
+>             if command -v xxd &>/dev/null; then
+>                 xxd "$file" | head -n 100 | less
+>             else
+>                 hexdump -C "$file" | head -n 100 | less
+>             fi
+>             ;;
+>     esac
+298,328c315
+<     echo "$dest_dir"
+< }
+<
 < # ------- Actions & Clipboard behavior (NEW: support multiple items) -------
 <
 < # clipboard_action now copies either the single selected item OR all marked items
@@ -4163,23 +4957,14 @@
 <     CLIPBOARD_MODE="$mode"
 <     show_message "Selected '$(basename "$src")' for ${mode}. Navigate to destination and press v to paste" 1.0
 ---
-> clipboard_cut() {
->     local src="$(get_selected_path)"
->     [[ -z "$src" ]] && return
->
->     echo "$src" > "$CLIPBOARD_FILE"
->     CLIPBOARD_MODE="cut"
->     show_message "Cut to clipboard: $(basename "$src")" 1
-331,332c380
+>     index_dir "$CURRENT_DIR"
+331,367c318,322
 < # paste_action iterates over possibly multiple items in clipboard
 < paste_action() {
----
-> clipboard_paste() {
-334c382
+<     if [[ ! -s "$CLIPBOARD_FILE" ]]; then
 <         show_error "Clipboard empty"
----
->         show_error "Clipboard is empty!"
-337,354c385,401
+<         return
+<     fi
 <
 <     local any_done=0
 <     local failures=0
@@ -4198,25 +4983,7 @@
 <             show_error "Exists: $base"
 <             failures=$((failures+1))
 <             continue
----
->
->     local src=$(cat "$CLIPBOARD_FILE")
->     local dest="$CURRENT_DIR/$(basename "$src")"
->
->     if [[ ! -e "$src" ]]; then
->         show_error "Source no longer exists!"
->         > "$CLIPBOARD_FILE"
->         CLIPBOARD_MODE=""
->         return
->     fi
->
->     if [[ "$CLIPBOARD_MODE" == "copy" ]]; then
->         if cp -r -- "$src" "$dest" 2>/dev/null; then
->             show_message "Pasted successfully."
->             index_dir "$CURRENT_DIR"
->         else
->             show_error "Paste failed!"
-356,373c403,406
+<         fi
 <
 <         case "$CLIPBOARD_MODE" in
 <             copy)
@@ -4229,32 +4996,59 @@
 <                 show_error "Unknown clipboard mode"; failures=$((failures+1)) ;;
 <         esac
 <     done < "$CLIPBOARD_FILE"
-<
+---
+> edit_file() {
+>     local file
+>     file="$(get_selected_path)"
+>     [[ -z "$file" ]] && { show_message "No file selected."; return; }
+>     if [[ -d "$file" ]]; then show_error "'$file' is a directory."; return; fi
+369,381c324,329
 <     if (( any_done )); then
 <         # if cut succeeded for at least one item, and no remaining items required,
 <         # we clear clipboard because the items were moved.
 <         if [[ "$CLIPBOARD_MODE" == "cut" && tmp_success -eq 1 ]]; then
 <             : > "$CLIPBOARD_FILE"
----
->     elif [[ "$CLIPBOARD_MODE" == "cut" ]]; then
->         if mv -- "$src" "$dest" 2>/dev/null; then
->             show_message "Pasted successfully."
->             > "$CLIPBOARD_FILE"
-375,378c408
+<             CLIPBOARD_MODE=""
 <         fi
 <         index_dir "$CURRENT_DIR"
 <         if (( failures == 0 )); then
 <             show_message "✓ Pasted $items item(s)" 0.9
----
->             index_dir "$CURRENT_DIR"
-380c410
+<         else
 <             show_message "Partial paste: $((items - failures)) succeeded, $failures failed" 1.2
+<         fi
 ---
->             show_error "Paste failed!"
-382,383d411
-<     else
+>     disable_input_mode
+>     local editor="${EDITOR:-nano}"
+>     local mime
+>     mime=$(file --mime-type -b "$file" 2>/dev/null || echo "")
+>     if [[ "$mime" == text/* ]]; then
+>         "$editor" "$file"
+383c331,349
 <         show_error "Paste failed"
-387,403c415,449
+---
+>         echo "Binary file detected."
+>         read -rp "Edit with hex editor? [y/N]: " ans
+>         if [[ "$ans" =~ ^[Yy]$ ]]; then
+>             if command -v hexedit &>/dev/null; then
+>                 hexedit "$file"
+>             elif command -v xxd &>/dev/null; then
+>                 tmphex="$(mktemp --tmpdir commander_hex.XXXXXX)"
+>                 xxd "$file" > "$tmphex"
+>                 "$editor" "$tmphex"
+>                 read -rp "Save changes? [y/N]: " save
+>                 if [[ "$save" =~ ^[Yy]$ ]]; then
+>                     xxd -r "$tmphex" > "$file"
+>                 fi
+>                 rm -f "$tmphex"
+>             else
+>                 echo "No hex editor available."
+>                 read -rp "Press Enter to continue..."
+>             fi
+>         fi
+384a351,352
+>     enable_input_mode
+>     index_dir "$CURRENT_DIR"
+387,396c355,362
 < # process_marked now simply selects marked items into clipboard (interactive flow)
 < process_marked() {
 <     local mode="$1"  # C | M | D
@@ -4265,140 +5059,76 @@
 <     if [[ "$mode" == "D" ]]; then
 <         disable_input_mode
 <         read -rp "Delete $count marked items? [y/N] " ans || ans="n"
-<         enable_input_mode
+---
+> rename_file() {
+>     local src
+>     src="$(get_selected_path)"
+>     [[ -z "$src" ]] && { show_message "No file selected."; return; }
+>     disable_input_mode
+>     read -rp $'\n\033[33mRename '"$(basename "$src")"': \033[0m' newname
+>     if [[ -z "$newname" ]]; then
+>         show_message "Rename cancelled."
+398,401d363
 <         if [[ "$ans" =~ ^[yY]$ ]]; then
 <             while IFS= read -r f; do rm -rf "$f" 2>/dev/null; done < "$MARKS_FILE"
 <             unmark_all; index_dir "$CURRENT_DIR"; show_message "✓ Bulk delete complete"
 <         fi
-<         return
-<     fi
----
-> create_new() {
->     tput cnorm
->     stty sane
->     echo
->     echo "Create: [f]ile or [d]irectory?"
->     read -rsn1 choice
->
->     case "$choice" in
->         f)
->             echo -ne "\n${C_YELLOW}New file name: ${C_RESET}"
->             read fname
->             [[ -z "$fname" ]] && { show_message "Cancelled."; return; }
->             if touch "$CURRENT_DIR/$fname" 2>/dev/null; then
->                 show_message "File created: $fname"
->                 index_dir "$CURRENT_DIR"
->             else
->                 show_error "Failed to create file!"
->             fi
->             ;;
->         d)
->             echo -ne "\n${C_YELLOW}New directory name: ${C_RESET}"
->             read dname
->             [[ -z "$dname" ]] && { show_message "Cancelled."; return; }
->             if mkdir -p "$CURRENT_DIR/$dname" 2>/dev/null; then
->                 show_message "Directory created: $dname"
->                 index_dir "$CURRENT_DIR"
->             else
->                 show_error "Failed to create directory!"
->             fi
->             ;;
->         *)
->             show_message "Cancelled."
->             ;;
->     esac
-> }
-405,410c451,464
+404,409c366,373
+<
 <     # For C/M we follow the interactive model: select and instruct user to navigate & paste
 <     if [[ "$mode" == "C" ]]; then
 <         clipboard_action "copy"
 <     elif [[ "$mode" == "M" ]]; then
 <         clipboard_action "cut"
-<     fi
 ---
-> search_files() {
->     tput cnorm
->     stty sane
->     echo -ne "\n${C_YELLOW}Search for: ${C_RESET}"
->     read query
->
->     [[ -z "$query" ]] && { show_message "Search cancelled."; return; }
->
->     clear
->     echo -e "${C_CYAN}Search results for: '$query'${C_RESET}"
->     echo "-----------------------------------"
->     find "$CURRENT_DIR" -iname "*$query*" 2>/dev/null | less
->
->     stty -echo -icanon time 0 min 0
-413c467,496
-< # ------- Other actions (unchanged) -------
----
-> show_info() {
->     local path="$(get_selected_path)"
->     [[ -z "$path" ]] && return
->
->     tput cnorm
->     stty sane
->     clear
->     echo -e "${C_CYAN}${C_BOLD}File Information${C_RESET}"
->     echo "-----------------------------------"
->     echo -e "${C_YELLOW}Path:${C_RESET} $path"
->
->     if [[ -d "$path" ]]; then
->         local count=$(find "$path" -mindepth 1 2>/dev/null | wc -l)
->         echo -e "${C_YELLOW}Type:${C_RESET} Directory"
->         echo -e "${C_YELLOW}Items:${C_RESET} $count"
+>     local dest
+>     dest="$(dirname "$src")/$newname"
+>     if [[ -e "$dest" ]]; then
+>         show_error "Destination exists!"
+>     elif mv -- "$src" "$dest"; then
+>         show_message "Renamed."
 >     else
->         local size=$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path" 2>/dev/null)
->         local mime=$(file --mime-type -b "$path" 2>/dev/null)
->         echo -e "${C_YELLOW}Type:${C_RESET} File"
->         echo -e "${C_YELLOW}Size:${C_RESET} $(format_size $size) ($size bytes)"
->         echo -e "${C_YELLOW}MIME:${C_RESET} $mime"
->     fi
->
->     echo
->     ls -lh "$path"
->     echo
->     read -p "Press Enter to continue..."
->
->     stty -echo -icanon time 0 min 0
-> }
-416,418c499,501
-<     local path
-<     path="$(get_selected_path)"
-<     [[ -z "$path" || ! -e "$path" ]] && return
+>         show_error "Rename failed!"
+410a375,376
+>     enable_input_mode
+>     index_dir "$CURRENT_DIR"
+413,415c379
+< # ------- Other actions (unchanged) -------
+<
+< enter_item() {
 ---
->     local path="$(get_selected_path)"
->     [[ -z "$path" ]] && return
->
-420c503,506
+> delete_file() {
+418,420c382,390
+<     [[ -z "$path" || ! -e "$path" ]] && return
+<     if [[ -d "$path" ]]; then
 <         cd "$path" 2>/dev/null && { CURRENT_DIR="$PWD"; CURRENT_PAGE=0; CURSOR_POS=0; index_dir "$CURRENT_DIR"; }
 ---
->         CURRENT_DIR="$path"
->         CURRENT_PAGE=0
->         CURSOR_POS=0
->         index_dir "$CURRENT_DIR"
-422,426c508,513
+>     [[ -z "$path" ]] && { show_message "No file selected."; return; }
+>     disable_input_mode
+>     read -rp $'\n\033[31mDelete '"$(basename "$path")"'? [y/N]: \033[0m' ans
+>     if [[ "$ans" =~ ^[Yy]$ ]]; then
+>         if rm -rf -- "$path"; then
+>             show_message "Deleted."
+>         else
+>             show_error "Delete failed!"
+>         fi
+422,434c392
 <         disable_input_mode
 <         if [[ -n "${EDITOR:-}" ]]; then "$EDITOR" "$path"
 <         elif command -v xdg-open &>/dev/null; then xdg-open "$path" &>/dev/null || true
 <         else less "$path"; fi
 <         enable_input_mode
----
->         echo "$path" >> "$SELECTION_FILE"
->         if command -v xdg-open &>/dev/null; then
->             xdg-open "$path" &>/dev/null &
->         elif command -v open &>/dev/null; then
->             open "$path" &>/dev/null &
->         fi
-431,432c518
+<     fi
+< }
+<
+< go_up() {
 <     local parent
 <     parent="$(dirname "$CURRENT_DIR")"
----
->     local parent="$(dirname "$CURRENT_DIR")"
-434,490c520,523
+<     if [[ "$parent" != "$CURRENT_DIR" ]]; then
 <         cd "$parent" 2>/dev/null && { CURRENT_DIR="$PWD"; CURRENT_PAGE=0; CURSOR_POS=0; index_dir "$CURRENT_DIR"; }
-<     fi
+---
+>         show_message "Delete cancelled."
+436,449d393
 < }
 <
 < preview_file() {
@@ -4413,40 +5143,99 @@
 <     else less "$file" || true; fi
 <     echo -n "Press any key to continue..."
 <     read -rsn1 || true
-<     enable_input_mode
-< }
-<
+450a395
+>     index_dir "$CURRENT_DIR"
+453c398
 < rename_file() {
-<     local src
-<     src="$(get_selected_path)"
+---
+> copy_file() {
+456c401
 <     [[ -z "$src" || ! -e "$src" ]] && return
-<     disable_input_mode
+---
+>     [[ -z "$src" ]] && { show_message "No file selected."; return; }
+458,463c403,408
 <     local fname
 <     fname="$(basename "$src")"
 <     echo -e "\n\033[1mRename:\033[0m $fname"
 <     read -r -e -p "New name: " newname || newname=""
 <     if [[ -n "$newname" && "$newname" != "$fname" ]]; then
 <         mv -n "$src" "$(dirname "$src")/$newname" 2>/dev/null && show_message "✓ Renamed" 0.7 || show_error "✗ Failed"
-<     fi
-<     enable_input_mode
-<     index_dir "$CURRENT_DIR"
-< }
-<
+---
+>     read -rp $'\n\033[33mCopy to (path): \033[0m' dest
+>     if [[ -z "$dest" ]]; then show_message "Copy cancelled."; enable_input_mode; return; fi
+>     if cp -r -- "$src" "$dest"; then
+>         show_message "Copied."
+>     else
+>         show_error "Copy failed!"
+469c414
 < delete_file() {
-<     local src
-<     src="$(get_selected_path)"
+---
+> move_file() {
+472c417
 <     [[ -z "$src" || ! -e "$src" ]] && return
-<     disable_input_mode
+---
+>     [[ -z "$src" ]] && { show_message "No file selected."; return; }
+474,476c419,424
 <     read -rp "Delete '$(basename "$src")'? [y/N] " ans || ans="n"
 <     if [[ "$ans" =~ ^[yY]$ ]]; then
 <         rm -rf "$src" 2>/dev/null && show_message "✓ Deleted" 0.7 || show_error "✗ Failed"
-<     fi
-<     enable_input_mode
-<     index_dir "$CURRENT_DIR"
-< }
-<
-< create_new() {
-<     disable_input_mode
+---
+>     read -rp $'\n\033[33mMove to (path): \033[0m' dest
+>     if [[ -z "$dest" ]]; then show_message "Move cancelled."; enable_input_mode; return; fi
+>     if mv -- "$src" "$dest"; then
+>         show_message "Moved."
+>     else
+>         show_error "Move failed!"
+481a430,477
+> clipboard_copy() {
+>     local src
+>     src="$(get_selected_path)"
+>     [[ -z "$src" ]] && { show_message "No file selected."; return; }
+>     printf '%s' "$src" > "$CLIPBOARD_FILE"
+>     CLIPBOARD_MODE="copy"
+>     show_message "Copied to clipboard: $(basename "$src")" 1
+> }
+>
+> clipboard_cut() {
+>     local src
+>     src="$(get_selected_path)"
+>     [[ -z "$src" ]] && { show_message "No file selected."; return; }
+>     printf '%s' "$src" > "$CLIPBOARD_FILE"
+>     CLIPBOARD_MODE="cut"
+>     show_message "Cut to clipboard: $(basename "$src")" 1
+> }
+>
+> clipboard_paste() {
+>     if [[ ! -s "$CLIPBOARD_FILE" ]]; then show_error "Clipboard is empty!"; return; fi
+>     local src dest
+>     src=$(<"$CLIPBOARD_FILE")
+>     dest="$CURRENT_DIR/$(basename "$src")"
+>     if [[ ! -e "$src" ]]; then
+>         show_error "Source no longer exists!"
+>         : > "$CLIPBOARD_FILE"
+>         CLIPBOARD_MODE=""
+>         return
+>     fi
+>     if [[ "$CLIPBOARD_MODE" == "copy" ]]; then
+>         if cp -r -- "$src" "$dest"; then
+>             show_message "Pasted (copy)."
+>             index_dir "$CURRENT_DIR"
+>         else
+>             show_error "Paste failed!"
+>         fi
+>     elif [[ "$CLIPBOARD_MODE" == "cut" ]]; then
+>         if mv -- "$src" "$dest"; then
+>             show_message "Pasted (move)."
+>             : > "$CLIPBOARD_FILE"
+>             CLIPBOARD_MODE=""
+>             index_dir "$CURRENT_DIR"
+>         else
+>             show_error "Paste failed!"
+>         fi
+>     fi
+> }
+>
+484,491c480,516
 <     read -rp "Create [f]ile or [d]irectory? " choice || choice=""
 <     read -rp "Name: " name || name=""
 <     if [[ -n "$name" ]]; then
@@ -4454,37 +5243,145 @@
 <             f|F) touch "$CURRENT_DIR/$name" 2>/dev/null && show_message "✓ Created" 0.7 || show_error "✗ Failed" ;;
 <             d|D) mkdir -p "$CURRENT_DIR/$name" 2>/dev/null && show_message "✓ Created" 0.7 || show_error "✗ Failed" ;;
 <         esac
+<     fi
 ---
->         CURRENT_DIR="$parent"
->         CURRENT_PAGE=0
->         CURSOR_POS=0
->         index_dir "$CURRENT_DIR"
-492,493d524
-<     enable_input_mode
+>     read -rp $'\nCreate: [f]ile or [d]irectory? ' choice
+>     case "$choice" in
+>         f)
+>             read -rp $'\n\033[33mNew file name: \033[0m' fname
+>             [[ -z "$fname" ]] && { show_message "Cancelled."; enable_input_mode; return; }
+>             if touch "$CURRENT_DIR/$fname"; then
+>                 show_message "File created: $fname"
+>                 index_dir "$CURRENT_DIR"
+>             else
+>                 show_error "Failed to create file!"
+>             fi
+>             ;;
+>         d)
+>             read -rp $'\n\033[33mNew directory name: \033[0m' dname
+>             [[ -z "$dname" ]] && { show_message "Cancelled."; enable_input_mode; return; }
+>             if mkdir -p "$CURRENT_DIR/$dname"; then
+>                 show_message "Directory: $dname created."
+>                 index_dir "$CURRENT_DIR"
+>             else
+>                 show_error "Failed to create directory!"
+>             fi
+>             ;;
+>         *)
+>             show_message "Cancelled."
+>             ;;
+>     esac
+>     enable_input_mode
+> }
+>
+> search_files() {
+>     disable_input_mode
+>     read -rp $'\n\033[33mSearch for: \033[0m' query
+>     if [[ -z "$query" ]]; then show_message "Search cancelled."; enable_input_mode; return; fi
+>     clear
+>     echo -e "\033[36mSearch results for: '$query'\033[0m"
+>     echo "-----------------------------------"
+>     find "$CURRENT_DIR" -iname "*$query*" 2>/dev/null | less
+493d517
 <     index_dir "$CURRENT_DIR"
-496,549c527
-< show_info() {
+497,499c521,523
 <     local src
 <     src="$(get_selected_path)"
 <     [[ -z "$src" || ! -e "$src" ]] && return
-<     disable_input_mode
+---
+>     local path
+>     path="$(get_selected_path)"
+>     [[ -z "$path" ]] && { show_message "No file selected."; return; }
+501,506c525,545
 <     tput clear
 <     tput cup 0 0
 <     echo -e "\033[1;36mFile Info\033[0m\n────────────────────────────────────────────────────────────────"
 <     ls -ldh "$src" 2>/dev/null; echo; file "$src" 2>/dev/null; echo; stat "$src" 2>/dev/null
 <     echo -ne "\nPress any key..."
 <     read -rsn1 || true
-<     enable_input_mode
-< }
-<
-< show_help() {
-<     disable_input_mode
+---
+>     clear
+>     echo -e "\033[36m\033[1mFile Information\033[0m"
+>     echo "-----------------------------------"
+>     echo -e "\033[33mPath:\033[0m $path"
+>     if [[ -d "$path" ]]; then
+>         local count
+>         count=$(find "$path" -mindepth 1 2>/dev/null | wc -l)
+>         echo -e "\033[33mType:\033[0m Directory"
+>         echo -e "\033[33mItems:\033[0m $count"
+>     else
+>         local size mime
+>         size=$(stat -c%s "$path" 2>/dev/null || stat -f%z "$path" 2>/dev/null || echo 0)
+>         mime=$(file --mime-type -b "$path" 2>/dev/null || echo "")
+>         echo -e "\033[33mType:\033[0m File"
+>         echo -e "\033[33mSize:\033[0m $(format_size "$size") ($size bytes)"
+>         echo -e "\033[33mMIME:\033[0m $mime"
+>     fi
+>     echo
+>     ls -lh -- "$path" 2>/dev/null || true
+>     echo
+>     read -rp "Press Enter to continue..."
+509a549,596
+> enter_item() {
+>     local path
+>     path="$(get_selected_path)"
+>     [[ -z "$path" ]] && { show_message "No file selected."; return; }
+>     if [[ -d "$path" ]]; then
+>         CURRENT_DIR="$path"
+>         CURRENT_PAGE=0
+>         CURSOR_POS=0
+>         index_dir "$CURRENT_DIR"
+>     else
+>         # record last opened selection
+>         printf '%s\n' "$path" >> "$SELECTION_FILE"
+>         if command -v xdg-open &>/dev/null; then
+>             xdg-open "$path" &>/dev/null &
+>         elif command -v open &>/dev/null; then
+>             open "$path" &>/dev/null &
+>         else
+>             show_message "No GUI opener found; file recorded in selection file."
+>         fi
+>     fi
+> }
+>
+> go_up() {
+>     local parent
+>     parent="$(dirname "$CURRENT_DIR")"
+>     if [[ "$parent" != "$CURRENT_DIR" ]]; then
+>         CURRENT_DIR="$parent"
+>         CURRENT_PAGE=0
+>         CURSOR_POS=0
+>         index_dir "$CURRENT_DIR"
+>     fi
+> }
+>
+> goto_top() {
+>     CURRENT_PAGE=0
+>     CURSOR_POS=0
+> }
+> goto_bottom() {
+>     CURRENT_PAGE=$((TOTAL_PAGES - 1))
+>     CURSOR_POS=$(( (TOTAL_FILES - 1 - CURRENT_PAGE * FILES_PER_PAGE) ))
+>     if (( CURSOR_POS < 0 )); then CURSOR_POS=0; fi
+> }
+>
+> refresh_index() {
+>     index_dir "$CURRENT_DIR"
+>     show_message "Refreshed index." 0.5
+> }
+>
+512,513c599
 <     tput clear
 <     tput cup 0 0
-<     cat <<'EOF'
+---
+>     clear
+515,516c601,602
 < BASH COMMANDER HELP
 < ────────────────────────────────────────────────────────────────
-< Navigation:
+---
+> BASH COMMANDER - Help
+>
+518,540c604,626
 <   Arrows     : Move cursor / Change directory
 <   Enter      : Open file or enter directory
 <   Backspace  : Go to parent directory
@@ -4508,937 +5405,7 @@
 <   p          : Preview file (bat or less)
 <   q          : Quit Commander
 < ────────────────────────────────────────────────────────────────
-< EOF
-<     echo -n "Press any key to return..."
-<     read -rsn1 || true
-<     enable_input_mode
-< }
-<
-< # ------- Main Loop -------
-<
-< enable_input_mode
 ---
-> # Main loop
-554,558c532,536
-<     if ! IFS= read -rsn1 key; then key=""; fi
-<
-<     if [[ "$key" == $'\x1b' ]]; then
-<         read -rsn2 -t 0.01 rest || rest=""
-<         key+="$rest"
----
->     read -rsn1 key
->
->     if [[ $key == $'\x1b' ]]; then
->         read -rsn2 -t 0.01 rest
->         key+=$rest
-560,577c538,539
-<             $'\x1b[A') # Up
-<                 if [ "$CURSOR_POS" -gt 0 ]; then
-<                     CURSOR_POS=$((CURSOR_POS - 1))
-<                 elif [ "$CURRENT_PAGE" -gt 0 ]; then
-<                     CURRENT_PAGE=$((CURRENT_PAGE - 1))
-<                     CURSOR_POS=$((FILES_PER_PAGE - 1))
-<                 fi
-<                 ;;
-<             $'\x1b[B') # Down
-<                 files_on_page=$(( TOTAL_FILES - (CURRENT_PAGE * FILES_PER_PAGE) ))
-<                 if (( files_on_page > FILES_PER_PAGE )); then files_on_page=$FILES_PER_PAGE; fi
-<                 if [ "$CURSOR_POS" -lt $((files_on_page - 1)) ]; then
-<                     CURSOR_POS=$((CURSOR_POS + 1))
-<                 elif [ "$CURRENT_PAGE" -lt $((TOTAL_PAGES - 1)) ]; then
-<                     CURRENT_PAGE=$((CURRENT_PAGE + 1))
-<                     CURSOR_POS=0
-<                 fi
-<                 ;;
----
->             $'\x1b[A') move_cursor_up ;;
->             $'\x1b[B') move_cursor_down ;;
-579d540
-<             $'\x1b[C') enter_item ;;
-581c542,560
-<         continue
----
->     elif [[ $key == "" ]]; then
->         enter_item
->     elif [[ $key == $'\x7f' ]]; then
->         go_up
->     else
->         case "$key" in
->             q) break ;;
->             p) preview_file ;;
->             e) edit_file ;;
->             r) rename_file ;;
->             d) delete_file ;;
->             c) clipboard_copy ;;
->             x) clipboard_cut ;;
->             v) clipboard_paste ;;
->             m) move_file ;;
->             n) create_new ;;
->             s) search_files ;;
->             i) show_info ;;
->         esac
-583,604d561
-<
-<     if [[ "$key" == "" || "$key" == $'\r' || "$key" == $'\n' ]]; then enter_item; continue; fi
-<     if [[ "$key" == $'\x7f' || "$key" == $'\x08' ]]; then go_up; continue; fi
-<
-<     case "$key" in
-<         q|Q) break ;;
-<         ' ') sel="$(get_selected_path)"; [[ -n "$sel" ]] && toggle_mark "$sel" ;;
-<         A)   mark_all_in_dir ;;
-<         u|U) unmark_all ;;
-<         c)   clipboard_action "copy" ;;    # now supports marked items
-<         x)   clipboard_action "cut" ;;     # now supports marked items
-<         v)   paste_action ;;               # paste multiple or single
-<         d)   delete_file ;;
-<         r)   rename_file ;;
-<         n)   create_new ;;
-<         i)   show_info ;;
-<         p)   preview_file ;;
-<         h|H) show_help ;;
-<         C)   process_marked "C" ;;         # legacy key: will select marked items into clipboard
-<         M)   process_marked "M" ;;
-<         D)   process_marked "D" ;;
-<     esac
-607c564,568
-< cleanup_exit 0
----
-> tput cnorm
-> stty sane
-> clear
-> echo -e "${C_GREEN}Session ended.${C_RESET}"
-> [[ -s "$SELECTION_FILE" ]] && echo "Selections saved in: $SELECTION_FILE"
-
---- Diff for noonCommander/NoonCommander.sh vs noonCommander/NoonCv5.sh ---
-1,2c1
-< #!/bin/bash
-<
----
-> #!/usr/bin/env bash
-4c3,4
-< # Version: 2.0
----
-> # Version: 2.1 (improved)
-> set -euo pipefail
-6c6
-< # Configuration
----
-> # ------- Configuration -------
-9,11c9,12
-< WRAP_WIDTH=$(tput cols)
-< SELECTION_FILE=".commander_selection.tmp"
-< CLIPBOARD_FILE=".commander_clipboard.tmp"
----
-> SELECTION_FILE="$(mktemp --tmpdir commander_selection.XXXXXX)"
-> CLIPBOARD_FILE="$(mktemp --tmpdir commander_clipboard.XXXXXX)"
-> TMP_INDEX_FILE="$(mktemp --tmpdir commander_index.XXXXXX)"
-> MARKS_FILE="$(mktemp --tmpdir commander_marks.XXXXXX)"
-13c14
-< # Initialize
----
-> # state
-15,16d15
-< > "$SELECTION_FILE"
-< > "$CLIPBOARD_FILE"
-19a19,22
-> WRAP_WIDTH="$(tput cols 2>/dev/null || echo 80)"
-> TOTAL_FILES=0
-> TOTAL_PAGES=1
-> FILES=()   # bash array of indexed files
-21,24c24
-< # Terminal setup
-< stty -echo -icanon time 0 min 0
-< trap 'cleanup_exit' INT TERM EXIT
-<
----
-> # Terminal setup / cleanup
-26,27c26,28
-<     tput cnorm
-<     stty sane
----
->     stty sane || true
->     tput cnorm || true
->     rm -f -- "$SELECTION_FILE" "$CLIPBOARD_FILE" "$TMP_INDEX_FILE" "$MARKS_FILE" >/dev/null 2>&1 || true
-30a32
-> trap cleanup_exit INT TERM EXIT
-32,40c34,43
-< # Color codes
-< C_RESET="\033[0m"
-< C_BOLD="\033[1m"
-< C_DIM="\033[2m"
-< C_GREEN="\033[32m"
-< C_BLUE="\033[34m"
-< C_YELLOW="\033[33m"
-< C_RED="\033[31m"
-< C_CYAN="\033[36m"
----
-> # put terminal into raw-ish mode for single-key input (and restore on exit)
-> enable_input_mode() {
->     stty -echo -icanon time 0 min 0
->     tput civis
-> }
-> disable_input_mode() {
->     stty sane
->     tput cnorm
-> }
-> enable_input_mode
-42,48c45,47
-< index_dir() {
-<     local dir="$1"
-<     TMP_INDEX_FILE="/tmp/file_commander_index_$(echo "$dir" | md5sum | awk '{print $1}').tmp"
-<     find "$dir" -mindepth 1 -maxdepth 1 2>/dev/null | sort > "$TMP_INDEX_FILE"
-<     TOTAL_FILES=$(wc -l < "$TMP_INDEX_FILE")
-<     TOTAL_PAGES=$(( (TOTAL_FILES + FILES_PER_PAGE - 1) / FILES_PER_PAGE ))
-<     [[ $TOTAL_FILES -eq 0 ]] && TOTAL_PAGES=1
----
-> # Update wrap width on resize
-> on_resize() {
->     WRAP_WIDTH="$(tput cols 2>/dev/null || echo 80)"
-49a49
-> trap 'on_resize' WINCH
-50a51
-> # ------- Utilities -------
-56c57
-<         echo "$((size / 1024))K"
----
->         awk -v s="$size" 'BEGIN{printf "%.1fK", s/1024}'
-58c59,96
-<         echo "$((size / 1048576))M"
----
->         awk -v s="$size" 'BEGIN{printf "%.1fM", s/1048576}'
->     else
->         awk -v s="$size" 'BEGIN{printf "%.1fG", s/1073741824}'
->     fi
-> }
->
-> # Index directory safely (handles spaces/newlines)
-> index_dir() {
->     local dir="$1"
->     : > "$TMP_INDEX_FILE"
->     # Use find -mindepth 1 -maxdepth 1 -print0, turn into sorted newline-separated safely
->     if ! mapfile -t -d '' FILES < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null | sort -z); then
->         # fallback: empty
->         FILES=()
->     fi
->
->     # Some versions of sort -z may not behave; normalize with printf
->     if [[ "${#FILES[@]}" -eq 0 ]]; then
->         # Create newline-separated file list reliably
->         IFS=$'\n' read -r -d '' -a FILES < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null | xargs -0 -n1 printf '%s\n' | sort -f | sed -z 's/\n$//' && printf '\0')
->     fi
->
->     # Write to tmp index file (one per line)
->     : > "$TMP_INDEX_FILE"
->     for f in "${FILES[@]}"; do
->         printf '%s\0' "$f" >> "$TMP_INDEX_FILE"
->     done
->
->     TOTAL_FILES=0
->     # count null-delimited entries
->     if [[ -s "$TMP_INDEX_FILE" ]]; then
->         TOTAL_FILES=$(tr -cd '\0' < "$TMP_INDEX_FILE" | wc -c)
->     else
->         TOTAL_FILES=0
->     fi
->
->     if (( TOTAL_FILES == 0 )); then
->         TOTAL_PAGES=1
-60c98,127
-<         echo "$((size / 1073741824))G"
----
->         TOTAL_PAGES=$(( (TOTAL_FILES + FILES_PER_PAGE - 1) / FILES_PER_PAGE ))
->     fi
->
->     # ensure cursor/page in valid range
->     if (( CURRENT_PAGE >= TOTAL_PAGES )); then CURRENT_PAGE=$((TOTAL_PAGES - 1)); fi
->     if (( CURRENT_PAGE < 0 )); then CURRENT_PAGE=0; fi
->     if (( CURSOR_POS >= FILES_PER_PAGE )); then CURSOR_POS=$((FILES_PER_PAGE - 1)); fi
-> }
->
-> read_index_entry() {
->     # read nth (0-based) entry from TMP_INDEX_FILE
->     local idx="$1"
->     local out
->     # iterate null-separated
->     out=$(awk -v n="$idx" 'BEGIN{RS="\0"; ORS=""} NR==n+1{print $0}' "$TMP_INDEX_FILE" || true)
->     printf '%s' "$out"
-> }
->
-> # mark toggle
-> is_marked() {
->     local path="$1"
->     grep -Fxq -- "$path" "$MARKS_FILE" 2>/dev/null
-> }
-> toggle_mark() {
->     local path="$1"
->     if is_marked "$path"; then
->         grep -Fxv -- "$path" "$MARKS_FILE" 2>/dev/null > "${MARKS_FILE}.tmp" || true
->         mv -f "${MARKS_FILE}.tmp" "$MARKS_FILE"
->     else
->         printf '%s\n' "$path" >> "$MARKS_FILE"
-63a131,149
-> # messages (temporarily leave raw mode)
-> show_message() {
->     local msg="$1"
->     local duration="${2:-1.5}"
->     disable_input_mode
->     echo -e "\n\033[1;32m${msg}\033[0m"
->     sleep "$duration"
->     enable_input_mode
-> }
-> show_error() {
->     local msg="$1"
->     local duration="${2:-1.5}"
->     disable_input_mode
->     echo -e "\n\033[1;31m${msg}\033[0m" >&2
->     sleep "$duration"
->     enable_input_mode
-> }
->
-> # ------- UI / drawing -------
-66,74c152,161
-<     tput civis
-<
-<     # Header
-<     echo -e "${C_BOLD}${C_CYAN}📁 BASH COMMANDER${C_RESET} - ${C_GREEN}$CURRENT_DIR${C_RESET}"
-<     echo -e "${C_DIM}Files: $TOTAL_FILES | Page: $((CURRENT_PAGE + 1))/$TOTAL_PAGES${C_RESET}"
-<
-<     # Keybindings
-<     echo -e "${C_YELLOW}↑↓${C_RESET}:Move ${C_YELLOW}Enter${C_RESET}:Open ${C_YELLOW}←${C_RESET}:Up ${C_YELLOW}[p]${C_RESET}:Preview ${C_YELLOW}[e]${C_RESET}:Edit ${C_YELLOW}[c]${C_RESET}:Copy ${C_YELLOW}[x]${C_RESET}:Cut ${C_YELLOW}[v]${C_RESET}:Paste"
-<     echo -e "${C_YELLOW}[m]${C_RESET}:Move ${C_YELLOW}[d]${C_RESET}:Delete ${C_YELLOW}[r]${C_RESET}:Rename ${C_YELLOW}[n]${C_RESET}:New ${C_YELLOW}[s]${C_RESET}:Search ${C_YELLOW}[i]${C_RESET}:Info ${C_YELLOW}[q]${C_RESET}:Quit"
----
->     on_resize
->
->     # header
->     echo -e "\033[1m\033[36m📁 BASH COMMANDER\033[0m - \033[32m$CURRENT_DIR\033[0m"
->     echo -e "\033[2mFiles: $TOTAL_FILES | Page: $((CURRENT_PAGE + 1))/$TOTAL_PAGES\033[0m"
->
->     # keybindings summary
->     echo -e "\033[33m↑↓\033[0m:Move  \033[33mEnter\033[0m:Open  \033[33m←\033[0m:Up  \033[33m}space\033[0m:Mark  \033[33m[p]\033[0m:Preview  \033[33m[e]\033[0m:Edit  \033[33m[c]\033[0m:Copy  \033[33m[x]\033[0m:Cut  \033[33m[v]\033[0m:Paste"
->     echo -e "\033[33m[m]\033[0m:Move  \033[33m[d]\033[0m:Delete  \033[33m[r]\033[0m:Rename  \033[33m[n]\033[0m:New  \033[33m[s]\033[0m:Search  \033[33m[i]\033[0m:Info  \033[33m[q]\033[0m:Quit"
->     echo -e "\033[33m[g]\033[0m:Top  \033[33m[G]\033[0m:Bottom  \033[33m[R]\033[0m:Refresh  \033[33m[h]\033[0m:Help"
-76c163
-<
----
->
-79,80c166,168
-<         local clip_item=$(cat "$CLIPBOARD_FILE")
-<         echo -e "${C_BLUE}📋 Clipboard [$CLIPBOARD_MODE]: $(basename "$clip_item")${C_RESET}"
----
->         local clip_item
->         clip_item=$(<"$CLIPBOARD_FILE")
->         echo -e "\033[34m📋 Clipboard [$CLIPBOARD_MODE]: $(basename "$clip_item")\033[0m"
-84,85c172,175
-<     START=$((CURRENT_PAGE * FILES_PER_PAGE + 1))
-<     END=$((START + FILES_PER_PAGE - 1))
----
->     # calculate start/end index (0-based)
->     local start=$(( CURRENT_PAGE * FILES_PER_PAGE ))
->     local end=$(( start + FILES_PER_PAGE - 1 ))
->     if (( end >= TOTAL_FILES )); then end=$((TOTAL_FILES - 1)); fi
-87,109c177,179
-<     awk -v s="$START" -v e="$END" -v c="$CURSOR_POS" -v w="$WRAP_WIDTH" -v base="$CURRENT_DIR" '
-<     NR >= s && NR <= e {
-<         path = $0;
-<         fname = substr(path, length(base) + 2);
-<         prefix = (NR - s == c ? "> " : "  ");
-<
-<         # Show directory indicator
-<         cmd = "test -d \"" path "\"";
-<         if (system(cmd) == 0) {
-<             fname = fname "/";
-<         }
-<
-<         while (length(fname) > w - 4) {
-<             print prefix substr(fname,1,w-4);
-<             fname = substr(fname,w-3);
-<             prefix = "  '"$INDENT"'";
-<         }
-<         print prefix fname;
-<     }' "$TMP_INDEX_FILE"
-<
-<     # Show empty directory message
-<     if [[ $TOTAL_FILES -eq 0 ]]; then
-<         echo -e "  ${C_DIM}(Empty directory)${C_RESET}"
----
->     if (( TOTAL_FILES == 0 )); then
->         echo -e "  \033[2m(Empty directory)\033[0m"
->         return
-111d180
-< }
-113,120c182,202
-< move_cursor_up() {
-<     if (( CURSOR_POS > 0 )); then
-<         ((CURSOR_POS--))
-<     elif (( CURRENT_PAGE > 0 )); then
-<         ((CURRENT_PAGE--))
-<         CURSOR_POS=$((FILES_PER_PAGE - 1))
-<     fi
-< }
----
->     # print entries: we stored index as null-delimited in TMP_INDEX_FILE
->     local i=0
->     local idx=0
->     # read entries one by one
->     while IFS= read -r -d '' entry; do
->         if (( idx < start )); then ((idx++)); continue; fi
->         if (( idx > end )); then break; fi
->
->         local rel="${entry#$CURRENT_DIR/}"
->         local display="$rel"
->         # append slash for directories
->         if [[ -d "$entry" ]]; then display="$display/"; fi
->
->         local prefix="  "
->         if (( idx == start + CURSOR_POS )); then
->             prefix="> "
->             # highlight current
->             printf '%s' "\033[1m\033[36m$prefix"
->         else
->             printf '%s' "  "
->         fi
-122,129c204,209
-< move_cursor_down() {
-<     if (( CURSOR_POS < FILES_PER_PAGE - 1 && CURSOR_POS + CURRENT_PAGE * FILES_PER_PAGE < TOTAL_FILES - 1 )); then
-<         ((CURSOR_POS++))
-<     elif (( CURRENT_PAGE < TOTAL_PAGES - 1 )); then
-<         ((CURRENT_PAGE++))
-<         CURSOR_POS=0
-<     fi
-< }
----
->         # show mark
->         if is_marked "$entry"; then
->             printf '[*] '
->         else
->             printf '    '
->         fi
-131,134c211,225
-< get_selected_path() {
-<     local line=$((CURRENT_PAGE * FILES_PER_PAGE + CURSOR_POS + 1))
-<     sed -n "${line}p" "$TMP_INDEX_FILE"
-< }
----
->         # wrap long names
->         local maxw=$(( WRAP_WIDTH - 10 ))
->         if (( maxw < 20 )); then maxw=20; fi
->
->         # use fold to wrap nicely (preserve leading indent)
->         printf '%s' "$(echo "$display" | fold -s -w "$maxw" | sed -n '1p')"
->         # if multiple lines, print them with indent
->         local rest
->         rest=$(echo "$display" | fold -s -w "$maxw" | sed -n '2,$p' || true)
->         printf '\n'
->         if [[ -n "$rest" ]]; then
->             while IFS= read -r line; do
->                 printf '      %s\n' "$line"
->             done <<<"$rest"
->         fi
-136,143c227,231
-< show_message() {
-<     local msg="$1"
-<     local duration="${2:-2}"
-<     tput cnorm
-<     stty sane
-<     echo -e "\n${C_GREEN}${msg}${C_RESET}"
-<     sleep "$duration"
-<     stty -echo -icanon time 0 min 0
----
->         # reset styling for next line
->         printf '\033[0m'
->         ((idx++))
->         ((i++))
->     done <"$TMP_INDEX_FILE"
-146,153c234,245
-< show_error() {
-<     local msg="$1"
-<     local duration="${2:-2}"
-<     tput cnorm
-<     stty sane
-<     echo -e "\n${C_RED}${msg}${C_RESET}"
-<     sleep "$duration"
-<     stty -echo -icanon time 0 min 0
----
-> # ------- Actions -------
-> get_selected_path() {
->     if (( TOTAL_FILES == 0 )); then
->         printf ''
->         return
->     fi
->     local global_index=$(( CURRENT_PAGE * FILES_PER_PAGE + CURSOR_POS ))
->     if (( global_index < 0 || global_index >= TOTAL_FILES )); then
->         printf ''
->         return
->     fi
->     read_index_entry "$global_index"
-157,167c249,254
-<     local file="$(get_selected_path)"
-<     [[ -z "$file" ]] && return
-<
-<     if [[ -d "$file" ]]; then
-<         show_error "'$file' is a directory."
-<         return
-<     fi
-<
-<     local mime=$(file --mime-type -b "$file" 2>/dev/null)
-<     tput cnorm
-<     stty sane
----
->     local file
->     file="$(get_selected_path)"
->     [[ -z "$file" ]] && { show_message "No file selected."; return; }
->     if [[ -d "$file" ]]; then show_error "'$file' is a directory."; return; fi
->
->     disable_input_mode
-169c256
-<     echo -e "${C_CYAN}${C_BOLD}Previewing:${C_RESET} $file"
----
->     echo -e "\033[36m\033[1mPreviewing:\033[0m $file"
-171c258,259
-<
----
->     local mime
->     mime=$(file --mime-type -b "$file" 2>/dev/null || echo "")
-175c263
-<                 bat --style=plain "$file"
----
->                 bat --style=plain --paging=always "$file"
-182c270
-<                 identify "$file" 2>/dev/null
----
->                 identify "$file" 2>/dev/null | sed -n '1,200p'
-187c275
-<             read -p "Press Enter to continue..."
----
->             read -rp "Press Enter to continue..."
-193,194c281,282
-<                 echo "pdftotext not found. Install poppler-utils."
-<                 read -p "Press Enter to continue..."
----
->                 echo "Install pdftotext (poppler-utils) for PDF previews."
->                 read -rp "Press Enter to continue..."
-199c287
-<                 ffprobe "$file" 2>&1 | less
----
->                 ffprobe -v error -show_format -show_streams "$file" 2>&1 | less
-204c292
-<                 read -p "Press Enter to continue..."
----
->                 read -rp "Press Enter to continue..."
-211c299
-<                 tar -tzf "$file" 2>/dev/null | less || tar -tJf "$file" 2>/dev/null | less
----
->                 tar -tf "$file" 2>/dev/null | less
-214c302
-<                 read -p "Press Enter to continue..."
----
->                 read -rp "Press Enter to continue..."
-218c306
-<             echo "Binary or unknown filetype. Hex preview:"
----
->             echo "Binary or unknown filetype. Hex preview (first 100 lines):"
-226,227c314
-<
-<     stty -echo -icanon time 0 min 0
----
->     enable_input_mode
-232,245c319,324
-<     local file="$(get_selected_path)"
-<     [[ -z "$file" ]] && return
-<
-<     if [[ -d "$file" ]]; then
-<         show_error "'$file' is a directory."
-<         return
-<     fi
-<
-<     local mime=$(file --mime-type -b "$file" 2>/dev/null)
-<     tput cnorm
-<     stty sane
-<     clear
-<
-<     # Use EDITOR environment variable or default to nano
----
->     local file
->     file="$(get_selected_path)"
->     [[ -z "$file" ]] && { show_message "No file selected."; return; }
->     if [[ -d "$file" ]]; then show_error "'$file' is a directory."; return; fi
->
->     disable_input_mode
-247,268c326,342
-<
-<     case "$mime" in
-<         text/*)
-<             "$editor" "$file"
-<             ;;
-<         *)
-<             echo "Binary file detected."
-<             echo -n "Edit with hex editor? [y/N]: "
-<             read ans
-<             if [[ "$ans" == [yY] ]]; then
-<                 if command -v hexedit &>/dev/null; then
-<                     hexedit "$file"
-<                 elif command -v xxd &>/dev/null; then
-<                     xxd "$file" > /tmp/hex_edit.tmp
-<                     "$editor" /tmp/hex_edit.tmp
-<                     echo -n "Save changes? [y/N]: "
-<                     read save
-<                     [[ "$save" == [yY] ]] && xxd -r /tmp/hex_edit.tmp > "$file"
-<                     rm -f /tmp/hex_edit.tmp
-<                 else
-<                     echo "No hex editor available."
-<                     read -p "Press Enter to continue..."
----
->     local mime
->     mime=$(file --mime-type -b "$file" 2>/dev/null || echo "")
->     if [[ "$mime" == text/* ]]; then
->         "$editor" "$file"
->     else
->         echo "Binary file detected."
->         read -rp "Edit with hex editor? [y/N]: " ans
->         if [[ "$ans" =~ ^[Yy]$ ]]; then
->             if command -v hexedit &>/dev/null; then
->                 hexedit "$file"
->             elif command -v xxd &>/dev/null; then
->                 tmphex="$(mktemp --tmpdir commander_hex.XXXXXX)"
->                 xxd "$file" > "$tmphex"
->                 "$editor" "$tmphex"
->                 read -rp "Save changes? [y/N]: " save
->                 if [[ "$save" =~ ^[Yy]$ ]]; then
->                     xxd -r "$tmphex" > "$file"
-269a344,347
->                 rm -f "$tmphex"
->             else
->                 echo "No hex editor available."
->                 read -rp "Press Enter to continue..."
-271,274c349,351
-<             ;;
-<     esac
-<
-<     stty -echo -icanon time 0 min 0
----
->         fi
->     fi
->     enable_input_mode
-279,286c356,360
-<     local src="$(get_selected_path)"
-<     [[ -z "$src" ]] && return
-<
-<     tput cnorm
-<     stty sane
-<     echo -ne "\n${C_YELLOW}Rename '$(basename "$src")' to: ${C_RESET}"
-<     read newname
-<
----
->     local src
->     src="$(get_selected_path)"
->     [[ -z "$src" ]] && { show_message "No file selected."; return; }
->     disable_input_mode
->     read -rp $'\n\033[33mRename '"$(basename "$src")"': \033[0m' newname
-288a363
->         enable_input_mode
-291,292c366,367
-<
-<     local dest="$(dirname "$src")/$newname"
----
->     local dest
->     dest="$(dirname "$src")/$newname"
-294,297c369,371
-<         show_error "File already exists!"
-<     elif mv -- "$src" "$dest" 2>/dev/null; then
-<         show_message "Renamed successfully."
-<         index_dir "$CURRENT_DIR"
----
->         show_error "Destination exists!"
->     elif mv -- "$src" "$dest"; then
->         show_message "Renamed."
-300a375,376
->     enable_input_mode
->     index_dir "$CURRENT_DIR"
-304,315c380,387
-<     local path="$(get_selected_path)"
-<     [[ -z "$path" ]] && return
-<
-<     tput cnorm
-<     stty sane
-<     echo -ne "\n${C_RED}Delete '$(basename "$path")'? [y/N]: ${C_RESET}"
-<     read ans
-<
-<     if [[ "$ans" == [yY] ]]; then
-<         if rm -rf -- "$path" 2>/dev/null; then
-<             show_message "Deleted successfully."
-<             index_dir "$CURRENT_DIR"
----
->     local path
->     path="$(get_selected_path)"
->     [[ -z "$path" ]] && { show_message "No file selected."; return; }
->     disable_input_mode
->     read -rp $'\n\033[31mDelete '"$(basename "$path")"'? [y/N]: \033[0m' ans
->     if [[ "$ans" =~ ^[Yy]$ ]]; then
->         if rm -rf -- "$path"; then
->             show_message "Deleted."
-321a394,395
->     enable_input_mode
->     index_dir "$CURRENT_DIR"
-325,337c399,406
-<     local src="$(get_selected_path)"
-<     [[ -z "$src" ]] && return
-<
-<     tput cnorm
-<     stty sane
-<     echo -ne "\n${C_YELLOW}Copy to (path): ${C_RESET}"
-<     read dest
-<
-<     [[ -z "$dest" ]] && { show_message "Copy cancelled."; return; }
-<
-<     if cp -r -- "$src" "$dest" 2>/dev/null; then
-<         show_message "Copied successfully."
-<         index_dir "$CURRENT_DIR"
----
->     local src
->     src="$(get_selected_path)"
->     [[ -z "$src" ]] && { show_message "No file selected."; return; }
->     disable_input_mode
->     read -rp $'\n\033[33mCopy to (path): \033[0m' dest
->     if [[ -z "$dest" ]]; then show_message "Copy cancelled."; enable_input_mode; return; fi
->     if cp -r -- "$src" "$dest"; then
->         show_message "Copied."
-340a410,411
->     enable_input_mode
->     index_dir "$CURRENT_DIR"
-344,356c415,422
-<     local src="$(get_selected_path)"
-<     [[ -z "$src" ]] && return
-<
-<     tput cnorm
-<     stty sane
-<     echo -ne "\n${C_YELLOW}Move to (path): ${C_RESET}"
-<     read dest
-<
-<     [[ -z "$dest" ]] && { show_message "Move cancelled."; return; }
-<
-<     if mv -- "$src" "$dest" 2>/dev/null; then
-<         show_message "Moved successfully."
-<         index_dir "$CURRENT_DIR"
----
->     local src
->     src="$(get_selected_path)"
->     [[ -z "$src" ]] && { show_message "No file selected."; return; }
->     disable_input_mode
->     read -rp $'\n\033[33mMove to (path): \033[0m' dest
->     if [[ -z "$dest" ]]; then show_message "Move cancelled."; enable_input_mode; return; fi
->     if mv -- "$src" "$dest"; then
->         show_message "Moved."
-359a426,427
->     enable_input_mode
->     index_dir "$CURRENT_DIR"
-363,366c431,434
-<     local src="$(get_selected_path)"
-<     [[ -z "$src" ]] && return
-<
-<     echo "$src" > "$CLIPBOARD_FILE"
----
->     local src
->     src="$(get_selected_path)"
->     [[ -z "$src" ]] && { show_message "No file selected."; return; }
->     printf '%s' "$src" > "$CLIPBOARD_FILE"
-372,375c440,443
-<     local src="$(get_selected_path)"
-<     [[ -z "$src" ]] && return
-<
-<     echo "$src" > "$CLIPBOARD_FILE"
----
->     local src
->     src="$(get_selected_path)"
->     [[ -z "$src" ]] && { show_message "No file selected."; return; }
->     printf '%s' "$src" > "$CLIPBOARD_FILE"
-381,388c449,452
-<     if [[ ! -s "$CLIPBOARD_FILE" ]]; then
-<         show_error "Clipboard is empty!"
-<         return
-<     fi
-<
-<     local src=$(cat "$CLIPBOARD_FILE")
-<     local dest="$CURRENT_DIR/$(basename "$src")"
-<
----
->     if [[ ! -s "$CLIPBOARD_FILE" ]]; then show_error "Clipboard is empty!"; return; fi
->     local src dest
->     src=$(<"$CLIPBOARD_FILE")
->     dest="$CURRENT_DIR/$(basename "$src")"
-391c455
-<         > "$CLIPBOARD_FILE"
----
->         : > "$CLIPBOARD_FILE"
-395d458
-<
-397,398c460,461
-<         if cp -r -- "$src" "$dest" 2>/dev/null; then
-<             show_message "Pasted successfully."
----
->         if cp -r -- "$src" "$dest"; then
->             show_message "Pasted (copy)."
-404,406c467,469
-<         if mv -- "$src" "$dest" 2>/dev/null; then
-<             show_message "Pasted successfully."
-<             > "$CLIPBOARD_FILE"
----
->         if mv -- "$src" "$dest"; then
->             show_message "Pasted (move)."
->             : > "$CLIPBOARD_FILE"
-416,421c479,480
-<     tput cnorm
-<     stty sane
-<     echo
-<     echo "Create: [f]ile or [d]irectory?"
-<     read -rsn1 choice
-<
----
->     disable_input_mode
->     read -rp $'\nCreate: [f]ile or [d]irectory? ' choice
-424,427c483,485
-<             echo -ne "\n${C_YELLOW}New file name: ${C_RESET}"
-<             read fname
-<             [[ -z "$fname" ]] && { show_message "Cancelled."; return; }
-<             if touch "$CURRENT_DIR/$fname" 2>/dev/null; then
----
->             read -rp $'\n\033[33mNew file name: \033[0m' fname
->             [[ -z "$fname" ]] && { show_message "Cancelled."; enable_input_mode; return; }
->             if touch "$CURRENT_DIR/$fname"; then
-435,439c493,496
-<             echo -ne "\n${C_YELLOW}New directory name: ${C_RESET}"
-<             read dname
-<             [[ -z "$dname" ]] && { show_message "Cancelled."; return; }
-<             if mkdir -p "$CURRENT_DIR/$dname" 2>/dev/null; then
-<                 show_message "Directory created: $dname"
----
->             read -rp $'\n\033[33mNew directory name: \033[0m' dname
->             [[ -z "$dname" ]] && { show_message "Cancelled."; enable_input_mode; return; }
->             if mkdir -p "$CURRENT_DIR/$dname"; then
->                 show_message "Directory: $dname created."
-448a506
->     enable_input_mode
-452,458c510,512
-<     tput cnorm
-<     stty sane
-<     echo -ne "\n${C_YELLOW}Search for: ${C_RESET}"
-<     read query
-<
-<     [[ -z "$query" ]] && { show_message "Search cancelled."; return; }
-<
----
->     disable_input_mode
->     read -rp $'\n\033[33mSearch for: \033[0m' query
->     if [[ -z "$query" ]]; then show_message "Search cancelled."; enable_input_mode; return; fi
-460c514
-<     echo -e "${C_CYAN}Search results for: '$query'${C_RESET}"
----
->     echo -e "\033[36mSearch results for: '$query'\033[0m"
-463,464c517
-<
-<     stty -echo -icanon time 0 min 0
----
->     enable_input_mode
-468,472c521,524
-<     local path="$(get_selected_path)"
-<     [[ -z "$path" ]] && return
-<
-<     tput cnorm
-<     stty sane
----
->     local path
->     path="$(get_selected_path)"
->     [[ -z "$path" ]] && { show_message "No file selected."; return; }
->     disable_input_mode
-474c526
-<     echo -e "${C_CYAN}${C_BOLD}File Information${C_RESET}"
----
->     echo -e "\033[36m\033[1mFile Information\033[0m"
-476,477c528
-<     echo -e "${C_YELLOW}Path:${C_RESET} $path"
-<
----
->     echo -e "\033[33mPath:\033[0m $path"
-479,487c530,540
-<         local count=$(find "$path" -mindepth 1 2>/dev/null | wc -l)
-<         echo -e "${C_YELLOW}Type:${C_RESET} Directory"
-<         echo -e "${C_YELLOW}Items:${C_RESET} $count"
-<     else
-<         local size=$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path" 2>/dev/null)
-<         local mime=$(file --mime-type -b "$path" 2>/dev/null)
-<         echo -e "${C_YELLOW}Type:${C_RESET} File"
-<         echo -e "${C_YELLOW}Size:${C_RESET} $(format_size $size) ($size bytes)"
-<         echo -e "${C_YELLOW}MIME:${C_RESET} $mime"
----
->         local count
->         count=$(find "$path" -mindepth 1 2>/dev/null | wc -l)
->         echo -e "\033[33mType:\033[0m Directory"
->         echo -e "\033[33mItems:\033[0m $count"
->     else
->         local size mime
->         size=$(stat -c%s "$path" 2>/dev/null || stat -f%z "$path" 2>/dev/null || echo 0)
->         mime=$(file --mime-type -b "$path" 2>/dev/null || echo "")
->         echo -e "\033[33mType:\033[0m File"
->         echo -e "\033[33mSize:\033[0m $(format_size "$size") ($size bytes)"
->         echo -e "\033[33mMIME:\033[0m $mime"
-489d541
-<
-491c543
-<     ls -lh "$path"
----
->     ls -lh -- "$path" 2>/dev/null || true
-493,495c545,546
-<     read -p "Press Enter to continue..."
-<
-<     stty -echo -icanon time 0 min 0
----
->     read -rp "Press Enter to continue..."
->     enable_input_mode
-499,501c550,552
-<     local path="$(get_selected_path)"
-<     [[ -z "$path" ]] && return
-<
----
->     local path
->     path="$(get_selected_path)"
->     [[ -z "$path" ]] && { show_message "No file selected."; return; }
-508c559,560
-<         echo "$path" >> "$SELECTION_FILE"
----
->         # record last opened selection
->         printf '%s\n' "$path" >> "$SELECTION_FILE"
-512a565,566
->         else
->             show_message "No GUI opener found; file recorded in selection file."
-518c572,573
-<     local parent="$(dirname "$CURRENT_DIR")"
----
->     local parent
->     parent="$(dirname "$CURRENT_DIR")"
-527c582,654
-< # Main loop
----
-> goto_top() {
->     CURRENT_PAGE=0
->     CURSOR_POS=0
-> }
-> goto_bottom() {
->     CURRENT_PAGE=$((TOTAL_PAGES - 1))
->     CURSOR_POS=$(( (TOTAL_FILES - 1 - CURRENT_PAGE * FILES_PER_PAGE) ))
->     if (( CURSOR_POS < 0 )); then CURSOR_POS=0; fi
-> }
->
-> refresh_index() {
->     index_dir "$CURRENT_DIR"
->     show_message "Refreshed index." 0.5
-> }
->
-> show_help() {
->     disable_input_mode
->     clear
->     cat <<'EOF'
-> BASH COMMANDER - Help
->
-> Navigation:
 >   Up/Down arrows - move selection
 >   Enter           - open file / enter directory
 >   ← or Backspace  - go to parent directory
@@ -5462,11 +5429,14 @@
 >
 > Marked items are saved to a temporary marks file (deleted on exit).
 >
-> EOF
+542,543c628
+<     echo -n "Press any key to return..."
+<     read -rsn1 || true
+---
 >     read -rp "Press Enter to return..."
->     enable_input_mode
-> }
->
+547c632,652
+< # ------- Main Loop -------
+---
 > # Movement helpers
 > move_cursor_up() {
 >     if (( CURSOR_POS > 0 )); then
@@ -5488,67 +5458,79 @@
 >         CURSOR_POS=0
 >     fi
 > }
->
-> # Initial indexing
-529a657
-> # ------- Main loop -------
-532,533c660,664
-<     read -rsn1 key
-<
+549c654
+< enable_input_mode
 ---
->
+> # Initial indexing
+551a657
+> # ------- Main loop -------
+554d659
+<     if ! IFS= read -rsn1 key; then key=""; fi
+556,557c661,667
+<     if [[ "$key" == $'\x1b' ]]; then
+<         read -rsn2 -t 0.01 rest || rest=""
+---
 >     # read a single key (non-blocking style already due to stty settings)
 >     IFS= read -r -n1 key || key=''
 >
 >     # handle escape sequences
-535,536c666,668
-<         read -rsn2 -t 0.01 rest
-<         key+=$rest
----
+>     if [[ $key == $'\x1b' ]]; then
 >         # try to read two more bytes (arrow keys)
 >         IFS= read -r -n2 -t 0.05 rest || rest=''
->         key+="$rest"
-538,540c670,674
-<             $'\x1b[A') move_cursor_up ;;
-<             $'\x1b[B') move_cursor_down ;;
+560,579c670,674
+<             $'\x1b[A') # Up
+<                 if [ "$CURSOR_POS" -gt 0 ]; then
+<                     CURSOR_POS=$((CURSOR_POS - 1))
+<                 elif [ "$CURRENT_PAGE" -gt 0 ]; then
+<                     CURRENT_PAGE=$((CURRENT_PAGE - 1))
+<                     CURSOR_POS=$((FILES_PER_PAGE - 1))
+<                 fi
+<                 ;;
+<             $'\x1b[B') # Down
+<                 files_on_page=$(( TOTAL_FILES - (CURRENT_PAGE * FILES_PER_PAGE) ))
+<                 if (( files_on_page > FILES_PER_PAGE )); then files_on_page=$FILES_PER_PAGE; fi
+<                 if [ "$CURSOR_POS" -lt $((files_on_page - 1)) ]; then
+<                     CURSOR_POS=$((CURSOR_POS + 1))
+<                 elif [ "$CURRENT_PAGE" -lt $((TOTAL_PAGES - 1)) ]; then
+<                     CURRENT_PAGE=$((CURRENT_PAGE + 1))
+<                     CURSOR_POS=0
+<                 fi
+<                 ;;
 <             $'\x1b[D') go_up ;;
+<             $'\x1b[C') enter_item ;;
 ---
 >             $'\x1b[A') move_cursor_up ;;    # up
 >             $'\x1b[B') move_cursor_down ;;  # down
 >             $'\x1b[D') go_up ;;             # left arrow -> go up
 >             $'\x1b[C') enter_item ;;        # right arrow -> enter
 >             *) ;;                           # ignore other sequences
-542c676,680
-<     elif [[ $key == "" ]]; then
+584,585c679,683
+<     if [[ "$key" == "" || "$key" == $'\r' || "$key" == $'\n' ]]; then enter_item; continue; fi
+<     if [[ "$key" == $'\x7f' || "$key" == $'\x08' ]]; then go_up; continue; fi
 ---
->         continue
->     fi
->
 >     # explicit newline / carriage return -> enter
 >     if [[ $key == $'\n' || $key == $'\r' ]]; then
-544,560c682
-<     elif [[ $key == $'\x7f' ]]; then
-<         go_up
-<     else
-<         case "$key" in
-<             q) break ;;
-<             p) preview_file ;;
-<             e) edit_file ;;
-<             r) rename_file ;;
-<             d) delete_file ;;
-<             c) clipboard_copy ;;
-<             x) clipboard_cut ;;
-<             v) clipboard_paste ;;
-<             m) move_file ;;
-<             n) create_new ;;
-<             s) search_files ;;
-<             i) show_info ;;
-<         esac
----
+>         enter_item
 >         continue
-561a684,725
->
->     case "$key" in
+>     fi
+588,603c686,724
+<         q|Q) break ;;
+<         ' ') sel="$(get_selected_path)"; [[ -n "$sel" ]] && toggle_mark "$sel" ;;
+<         A)   mark_all_in_dir ;;
+<         u|U) unmark_all ;;
+<         c)   clipboard_action "copy" ;;    # now supports marked items
+<         x)   clipboard_action "cut" ;;     # now supports marked items
+<         v)   paste_action ;;               # paste multiple or single
+<         d)   delete_file ;;
+<         r)   rename_file ;;
+<         n)   create_new ;;
+<         i)   show_info ;;
+<         p)   preview_file ;;
+<         h|H) show_help ;;
+<         C)   process_marked "C" ;;         # legacy key: will select marked items into clipboard
+<         M)   process_marked "M" ;;
+<         D)   process_marked "D" ;;
+---
 >         '') # sometimes read returns empty on timeout; just continue
 >             continue
 >             ;;
@@ -5588,17 +5570,12 @@
 >                 fi
 >             fi
 >             ;;
->     esac
-564,565c728,729
-< tput cnorm
-< stty sane
+607c728,736
+< cleanup_exit 0
 ---
 > # restore
 > disable_input_mode
-567,568c731,736
-< echo -e "${C_GREEN}Session ended.${C_RESET}"
-< [[ -s "$SELECTION_FILE" ]] && echo "Selections saved in: $SELECTION_FILE"
----
+> clear
 > echo -e "\033[32mSession ended.\033[0m"
 > if [[ -s "$SELECTION_FILE" ]]; then
 >     echo "Selections saved in: $SELECTION_FILE"
