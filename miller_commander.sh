@@ -1,326 +1,317 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# MILLER COMMANDER - A file manager demonstrating file_selector.sh
-#
-# This script provides a Miller column interface, using `file_selector.sh`
-# as the interactive component for directory navigation and file selection.
+# BASH MILLER COMMANDER
 # ==============================================================================
+#
+# A two-pane file manager using Miller columns, inspired by Midnight Commander.
+# It uses a separate script, file_selector.sh, to manage the state of each
+# pane, making this script the main controller for the UI and user input.
+#
 
-set -uo pipefail
+# --- Strict Mode & Globals ---
+set -euo pipefail
 
-# ------- Configuration -------
-readonly SELECTOR_SCRIPT="./file_selector.sh"
-readonly SELECTION_FILE="$(mktemp --tmpdir miller_selection.XXXXXX)"
+# --- Script Dependencies & Constants ---
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+PANE_MANAGER_SCRIPT="$SCRIPT_DIR/file_selector.sh"
+if [ ! -x "$PANE_MANAGER_SCRIPT" ]; then
+    echo "Error: The pane manager script '$PANE_MANAGER_SCRIPT' is not executable or not found." >&2
+    exit 1
+fi
 
-# Globals
-PANES=()
-ACTIVE_PANE_INDEX=0
-COL_WIDTH=0
-LAST_SELECTION=""
-CLIPBOARD_PATH=""
-CLIPBOARD_MODE="" # 'copy' or 'cut'
+# --- Global State ---
+# Associative arrays to hold the state for each pane
+declare -A PANE_0 PANE_1
+ACTIVE_PANE_NAME="PANE_0" # The name of the currently active pane
 STATUS_MESSAGE=""
 
-# ------- Terminal Setup / Cleanup -------
-INITIAL_STTY_SETTINGS=$(stty -g 2>/dev/null || echo "")
-cleanup_exit() {
-    trap - INT TERM EXIT
-    tput cnorm 2>/dev/null || true
-    tput rmcup 2>/dev/null || true
-    if [[ -n "$INITIAL_STTY_SETTINGS" ]]; then
-        stty "$INITIAL_STTY_SETTINGS" 2>/dev/null || true
-    fi
-    rm -f -- "$SELECTION_FILE" 2>/dev/null || true
-    exit "${1:-0}"
-}
-trap 'cleanup_exit 0' EXIT
-trap 'cleanup_exit 1' INT TERM
-
-update_term_size() {
-    COL_WIDTH=$(( $(tput cols) / 3 ))
-}
-trap update_term_size WINCH
-update_term_size
-
-# ------- File Operations -------
-copy_selection_to_clipboard() {
-    if [[ -n "$LAST_SELECTION" && -e "$LAST_SELECTION" ]]; then
-        CLIPBOARD_PATH="$LAST_SELECTION"
-        CLIPBOARD_MODE="copy"
-        STATUS_MESSAGE="Copied '$(basename "$CLIPBOARD_PATH")'"
-    else
-        STATUS_MESSAGE="No file selected to copy."
-    fi
-}
-
-paste_from_clipboard() {
-    local dest_dir="${PANES[$ACTIVE_PANE_INDEX]}"
-    if [[ ! -d "$dest_dir" ]]; then
-        STATUS_MESSAGE="Cannot paste into a file."
-        return
-    fi
-
-    if [[ -z "$CLIPBOARD_PATH" ]]; then
-        STATUS_MESSAGE="Clipboard is empty."
-        return
-    fi
-
-    if cp -r "$CLIPBOARD_PATH" "$dest_dir/"; then
-        STATUS_MESSAGE="Pasted '$(basename "$CLIPBOARD_PATH")'"
-    else
-        STATUS_MESSAGE="Error pasting file."
-    fi
-}
-
-delete_selection() {
-    if [[ -z "$LAST_SELECTION" || ! -e "$LAST_SELECTION" ]]; then
-        STATUS_MESSAGE="No file selected to delete."
-        return
-    fi
-
+# --- Terminal Handling & Cleanup ---
+# Function to be called on script exit to restore the terminal state
+cleanup() {
+    # Restore terminal settings
+    stty echo
+    # Show cursor
+    tput cnorm
+    # Switch back to the main screen buffer
     tput rmcup
-    stty "$INITIAL_STTY_SETTINGS" 2>/dev/null || true
+    # Clean up temporary files
+    rm -f "${PANE_0[marks_file]}" "${PANE_0[cache_file]}" 2>/dev/null || true
+    rm -f "${PANE_1[marks_file]}" "${PANE_1[cache_file]}" 2>/dev/null || true
+}
+trap cleanup EXIT
 
-    local ans
-    read -rp "Delete '$(basename "$LAST_SELECTION")'? [y/N] " ans
+# Hide cursor and switch to alternate screen buffer at the start
+tput smcup
+tput civis
+# Ensure stty is reset if the script is interrupted
+stty -echo
 
-    tput smcup
+# --- Pane Management ---
+# Initializes a pane's state using the pane manager script
+init_pane() {
+    local -n pane_ref=$1 # Use a nameref to the associative array (PANE_0 or PANE_1)
+    local start_dir="$2"
+    local pane_height="$3"
+    local pane_width="$4"
 
-    if [[ "$ans" =~ ^[yY]$ ]]; then
-        if rm -rf "$LAST_SELECTION"; then
-            STATUS_MESSAGE="Deleted '$(basename "$LAST_SELECTION")'"
-            local parent_dir
-            parent_dir=$(dirname "$LAST_SELECTION")
-            LAST_SELECTION=""
-            for i in "${!PANES[@]}"; do
-                if [[ "${PANES[$i]}" == "$parent_dir" ]]; then
-                    PANES=("${PANES[@]:0:$((i + 1))}")
-                    break
-                fi
-            done
-        else
-            STATUS_MESSAGE="Error deleting file."
-        fi
-    else
-        STATUS_MESSAGE="Delete cancelled."
-    fi
+    # Create temp files for marks and cache
+    pane_ref[marks_file]=$(mktemp)
+    pane_ref[cache_file]=$(mktemp)
+
+    # Get the initial state from the pane manager
+    local new_state
+    new_state=$("$PANE_MANAGER_SCRIPT" init \
+        --dir "$start_dir" \
+        --marks-file "${pane_ref[marks_file]}" \
+        --cache-file "${pane_ref[cache_file]}")
+
+    # Source the returned state into the pane's associative array
+    # This is safe because we control the output of file_selector.sh
+    source <(echo "$new_state")
+    pane_ref[dir]="$dir"
+    pane_ref[cursor_pos]=$cursor_pos
+    pane_ref[scroll_offset]=$scroll_offset
+    pane_ref[total_items]=$total_items
 }
 
-rename_selection() {
-    local old_path="$LAST_SELECTION"
-    if [[ -z "$old_path" || ! -e "$old_path" ]]; then
-        STATUS_MESSAGE="No file or directory selected to rename."
+# Updates a pane's state based on a navigation action
+navigate_pane() {
+    local -n pane_ref=$1
+    local direction="$2"
+
+    local new_state
+    new_state=$("$PANE_MANAGER_SCRIPT" navigate \
+        --dir "${pane_ref[dir]}" \
+        --cursor "${pane_ref[cursor_pos]}" \
+        --scroll "${pane_ref[scroll_offset]}" \
+        --marks-file "${pane_ref[marks_file]}" \
+        --cache-file "${pane_ref[cache_file]}" \
+        --direction "$direction")
+
+    source <(echo "$new_state")
+    pane_ref[dir]="$dir"
+    pane_ref[cursor_pos]=$cursor_pos
+    pane_ref[scroll_offset]=$scroll_offset
+    pane_ref[total_items]=$total_items
+}
+
+# --- File Operations ---
+perform_file_operation() {
+    local operation="$1"
+    local -n active_pane_ref=$ACTIVE_PANE_NAME
+    local inactive_pane_name=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
+    local -n inactive_pane_ref=$inactive_pane_name
+
+    readarray -t files_to_operate_on < <("$PANE_MANAGER_SCRIPT" get_selection \
+        --dir "${active_pane_ref[dir]}" \
+        --cursor "${active_pane_ref[cursor_pos]}" \
+        --marks-file "${active_pane_ref[marks_file]}" \
+        --cache-file "${active_pane_ref[cache_file]}")
+
+    if [ ${#files_to_operate_on[@]} -eq 0 ]; then
+        STATUS_MESSAGE="No files selected."
         return
     fi
 
-    tput rmcup
-    stty "$INITIAL_STTY_SETTINGS" 2>/dev/null || true
+    local dest_dir="${inactive_pane_ref[dir]}"
+    local success_count=0
+    local error_count=0
 
-    local old_name
-    old_name=$(basename "$old_path")
-    local dir_name
-    dir_name=$(dirname "$old_path")
-
-    local new_name
-    read -rp "Rename '$old_name' to: " new_name
-
-    tput smcup
-
-    if [[ -z "$new_name" || "$new_name" == "$old_name" ]]; then
-        STATUS_MESSAGE="Rename cancelled."
-        return
-    fi
-
-    local new_path="$dir_name/$new_name"
-
-    if [[ -e "$new_path" ]]; then
-        STATUS_MESSAGE="Error: '$new_name' already exists."
-        return
-    fi
-
-    if mv "$old_path" "$new_path"; then
-        STATUS_MESSAGE="Renamed to '$new_name'"
-        LAST_SELECTION="$new_path"
-
-        for i in "${!PANES[@]}"; do
-            if [[ "${PANES[$i]}" == "$old_path" ]]; then
-                PANES[$i]="$new_path"
-                break
-            fi
-        done
-    else
-        STATUS_MESSAGE="Error: Failed to rename."
-    fi
-}
-
-
-# ------- Preview Logic -------
-draw_preview_pane() {
-    local file_path="$1"
-    local start_row="$2"
-    local start_col="$3"
-    local pane_height="$4"
-    local pane_width="$5"
-
-    local mime
-    mime=$(file --mime-type -b "$file_path" 2>/dev/null || echo "")
-
-    local preview_content=""
-    case "$mime" in
-        text/*)
-            preview_content=$(cat "$file_path" 2>/dev/null)
-            ;;
-        image/*)
-            if command -v identify &>/dev/null; then
-                preview_content=$(identify "$file_path" 2>/dev/null)
-            else
-                preview_content=$(file "$file_path" 2>/dev/null)
-            fi
-            ;;
-        application/pdf)
-            if command -v pdftotext &>/dev/null; then
-                preview_content=$(pdftotext "$file_path" - 2>/dev/null)
-            else
-                preview_content="Install pdftotext to preview PDFs."
-            fi
-            ;;
-        audio/*|video/*)
-            if command -v ffprobe &>/dev/null; then
-                preview_content=$(ffprobe -v error -show_format -show_streams "$file_path" 2>/dev/null)
-            else
-                preview_content=$(file "$file_path" 2>/dev/null)
-            fi
-            ;;
-        application/zip)
-             if command -v unzip &>/dev/null; then
-                preview_content=$(unzip -l "$file_path" 2>/dev/null)
-             else
-                preview_content="Install unzip to preview zip files."
-             fi
-             ;;
-        application/x-tar|application/gzip)
-            if command -v tar &>/dev/null; then
-                preview_content=$(tar -tf "$file_path" 2>/dev/null)
-            else
-                preview_content="tar command not available for preview."
-            fi
-            ;;
-        *)
-            if command -v hexdump &>/dev/null; then
-                preview_content=$(hexdump -C "$file_path" 2>/dev/null)
-            else
-                preview_content="Binary file. No hex viewer found."
-            fi
-            ;;
-    esac
-
-    local row=$start_row
-    while IFS= read -r line; do
-        tput cup $row $start_col
-        printf "%s" "${line:0:$pane_width}"
-        row=$((row + 1))
-        if [[ $row -ge $((start_row + pane_height)) ]]; then break; fi
-    done <<< "$preview_content"
-}
-
-
-# ------- UI / Drawing -------
-draw_panes() {
-    tput clear
-
-    local term_height=$(tput lines)
-    local header_rows=2
-    local footer_rows=1
-    local content_height=$(( term_height - header_rows - footer_rows ))
-
-    for i in "${!PANES[@]}"; do
-        if [[ $i -ge 3 ]]; then break; fi # Max 3 panes
-
-        local item_path="${PANES[$i]}"
-        local col_start=$(( i * COL_WIDTH ))
-
-        # Draw header
-        tput cup 0 $col_start
-        local header_text
-        header_text=$(basename "$item_path")
-        if [[ $i -eq $ACTIVE_PANE_INDEX ]]; then
-            printf "\033[1m\033[44m%-${COL_WIDTH}s\033[0m" "$header_text"
-        else
-            printf "\033[4m%-${COL_WIDTH}s\033[0m" "$header_text"
-        fi
-
-        # Draw content
-        if [[ -d "$item_path" ]]; then
-            local row=$header_rows
-            while IFS= read -r item; do
-                tput cup $row $col_start
-
-                local display_item
-                display_item=$(basename "$item")
-                if [[ -d "$item" ]]; then display_item+="/"; fi
-
-                printf "%-${COL_WIDTH}s" "${display_item:0:$((COL_WIDTH-1))}"
-                row=$((row + 1))
-                if [[ $row -ge $term_height ]]; then break; fi
-            done < <(find "$item_path" -maxdepth 1 -mindepth 1 | sort | head -n $content_height)
-        elif [[ -f "$item_path" ]]; then
-            draw_preview_pane "$item_path" "$header_rows" "$col_start" "$content_height" "$COL_WIDTH"
-        fi
-    done
-
-    tput cup $((term_height - 1)) 0
-    printf "\033[7m%*s\033[0m" "$(tput cols)" ""
-    tput cup $((term_height - 1)) 1
-    if [[ -n "$STATUS_MESSAGE" ]]; then
-        printf "\033[7m%s\033[0m" "$STATUS_MESSAGE"
-        STATUS_MESSAGE=""
-    else
-        printf "\033[7m[h/l] Nav | [c] Copy | [v] Paste | [d] Del | [r] Ren | [q] Quit\033[0m"
-    fi
-}
-
-# ------- Main Loop -------
-main() {
-    chmod +x "$SELECTOR_SCRIPT"
-    tput smcup
-
-    PANES[0]="$(pwd)"
-
-    while true; do
-        draw_panes
-
-        IFS= read -rsn3 key || key=""
-        case "$key" in
-            $'\x1b[D'|h) # Left or h
-                if [[ $ACTIVE_PANE_INDEX -gt 0 ]]; then ACTIVE_PANE_INDEX=$((ACTIVE_PANE_INDEX - 1)); fi;;
-            $'\x1b[C'|l) # Right or l
-                if [[ $ACTIVE_PANE_INDEX -lt $((${#PANES[@]} - 1)) && $ACTIVE_PANE_INDEX -lt 2 ]]; then ACTIVE_PANE_INDEX=$((ACTIVE_PANE_INDEX + 1)); fi;;
-            ""|$'\n'|' ') # Enter or Space
-                local current_path="${PANES[$ACTIVE_PANE_INDEX]}"
-                if [[ ! -d "$current_path" ]]; then continue; fi
-
-                tput rmcup
-                bash "$SELECTOR_SCRIPT" "$current_path" "$SELECTION_FILE"
-                local exit_code=$?
-                tput smcup
-
-                if [[ $exit_code -eq 0 ]]; then
-                    LAST_SELECTION=$(<"$SELECTION_FILE")
-                    PANES=("${PANES[@]:0:$((ACTIVE_PANE_INDEX + 1))}")
-                    if [[ ${#PANES[@]} -lt 3 ]]; then PANES+=("$LAST_SELECTION"); else PANES[2]="$LAST_SELECTION"; fi
-                    if [[ -d "$LAST_SELECTION" ]]; then
-                         ACTIVE_PANE_INDEX=$((ACTIVE_PANE_INDEX + 1))
-                         if [[ $ACTIVE_PANE_INDEX -ge 3 ]]; then ACTIVE_PANE_INDEX=2; fi
-                    fi
+    for src_path in "${files_to_operate_on[@]}"; do
+        if [ ! -e "$src_path" ]; then continue; fi
+        case "$operation" in
+            copy)
+                if cp -r "$src_path" "$dest_dir/"; then
+                    success_count=$((success_count + 1))
+                else
+                    error_count=$((error_count + 1))
                 fi
                 ;;
-            c|C) copy_selection_to_clipboard;;
-            v|V) paste_from_clipboard;;
-            d|D) delete_selection;;
-            r|R) rename_selection;;
-            q|Q) break;;
+            move)
+                if mv "$src_path" "$dest_dir/"; then
+                    success_count=$((success_count + 1))
+                else
+                    error_count=$((error_count + 1))
+                fi
+                ;;
+            delete)
+                if rm -rf "$src_path"; then
+                    success_count=$((success_count + 1))
+                else
+                    error_count=$((error_count + 1))
+                fi
+                ;;
+        esac
+    done
+
+    STATUS_MESSAGE="Successfully performed '$operation' on $success_count file(s)."
+    if [ $error_count -gt 0 ]; then
+        STATUS_MESSAGE="$STATUS_MESSAGE Errors on $error_count file(s)."
+    fi
+
+    # After any file operation, re-index both panes to reflect changes
+    local term_height=$(tput lines)
+    local term_width=$(tput cols)
+    local half_width=$((term_width / 2))
+    local pane_height=$((term_height - 3))
+    init_pane "$ACTIVE_PANE_NAME" "${active_pane_ref[dir]}" "$pane_height" "$half_width"
+    init_pane "$inactive_pane_name" "${inactive_pane_ref[dir]}" "$pane_height" "$half_width"
+}
+
+
+# --- UI Drawing ---
+draw_ui() {
+    local term_height=$(tput lines)
+    local term_width=$(tput cols)
+    local half_width=$((term_width / 2))
+    local pane_height=$((term_height - 3)) # Reserve lines for top/bottom bars
+
+    # Clear screen
+    tput clear
+
+    # --- Draw Panes ---
+    local -n active_pane_ref=$ACTIVE_PANE_NAME
+    local inactive_pane_name=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
+    local -n inactive_pane_ref=$inactive_pane_name
+
+    # Get pane content from the manager script
+    local pane0_content
+    pane0_content=$("$PANE_MANAGER_SCRIPT" get_pane_content \
+        --dir "${PANE_0[dir]}" \
+        --cursor "${PANE_0[cursor_pos]}" \
+        --scroll "${PANE_0[scroll_offset]}" \
+        --marks-file "${PANE_0[marks_file]}" \
+        --cache-file "${PANE_0[cache_file]}" \
+        --is-active "$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "true" || echo "false")" \
+        --height "$pane_height")
+
+    local pane1_content
+    pane1_content=$("$PANE_MANAGER_SCRIPT" get_pane_content \
+        --dir "${PANE_1[dir]}" \
+        --cursor "${PANE_1[cursor_pos]}" \
+        --scroll "${PANE_1[scroll_offset]}" \
+        --marks-file "${PANE_1[marks_file]}" \
+        --cache-file "${PANE_1[cache_file]}" \
+        --is-active "$([ "$ACTIVE_PANE_NAME" == "PANE_1" ] && echo "true" || echo "false")" \
+        --height "$pane_height")
+
+    # Use paste to draw columns side-by-side
+    paste <(echo "$pane0_content") <(echo "$pane1_content")
+
+    # --- Draw Bottom Bar ---
+    tput cup $((term_height - 1)) 0
+    tput el
+    echo -n " F1 Help  F2 View  F3 Edit  F4 MkDir  F5 Copy  F6 Move  F7 Delete  F10 Quit"
+    tput cup $((term_height - 2)) 0
+    tput el
+    echo -n " $STATUS_MESSAGE"
+}
+
+
+# --- Main Application Logic ---
+main() {
+    local term_height=$(tput lines)
+    local term_width=$(tput cols)
+    local half_width=$((term_width / 2))
+    local pane_height=$((term_height - 3))
+
+    # Initialize both panes, allowing overrides from command-line arguments
+    local start_dir_0=${1:-"$(pwd)"}
+    local start_dir_1=${2:-"$HOME"}
+    init_pane PANE_0 "$start_dir_0" "$pane_height" "$half_width"
+    init_pane PANE_1 "$start_dir_1" "$pane_height" "$half_width"
+
+    while true; do
+        draw_ui
+
+        # Read a single character of input, clearing IFS to read spaces literally
+        local key
+        IFS= read -rsn1 key
+
+        # Handle multi-byte escape sequences for arrow keys, etc.
+        if [[ "$key" == $'\e' ]]; then
+            local seq=""
+            # Read the rest of the sequence
+            while read -rsn1 -t 0.05 char; do
+                seq="$seq$char"
+            done
+            key="$key$seq"
+        fi
+
+        STATUS_MESSAGE="" # Clear status on new keypress
+
+        case "$key" in
+            # Navigation
+            $'\e[A') navigate_pane "$ACTIVE_PANE_NAME" "up" ;;
+            $'\e[B') navigate_pane "$ACTIVE_PANE_NAME" "down" ;;
+            $'\e[C') navigate_pane "$ACTIVE_PANE_NAME" "enter" ;;
+            $'\e[D') navigate_pane "$ACTIVE_PANE_NAME" "back" ;;
+            '')   navigate_pane "$ACTIVE_PANE_NAME" "enter" ;; # Enter key
+
+            # Pane switching
+            $'\t') # Tab key
+                ACTIVE_PANE_NAME=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
+                ;;
+
+            # Marking files
+            ' ') # Space bar
+                local -n pane_ref=$ACTIVE_PANE_NAME
+                # The toggle_mark script now returns the new state, so we must capture it.
+                local new_state
+                new_state=$("$PANE_MANAGER_SCRIPT" toggle_mark \
+                    --dir "${pane_ref[dir]}" \
+                    --cursor "${pane_ref[cursor_pos]}" \
+                    --scroll "${pane_ref[scroll_offset]}" \
+                    --marks-file "${pane_ref[marks_file]}" \
+                    --cache-file "${pane_ref[cache_file]}")
+
+                # Source the new state to update the pane
+                source <(echo "$new_state")
+                pane_ref[dir]="$dir"
+                pane_ref[cursor_pos]=$cursor_pos
+                pane_ref[scroll_offset]=$scroll_offset
+                pane_ref[total_items]=$total_items
+                ;;
+
+            # Function Keys
+            $'\e[11~') # F1 Help
+                STATUS_MESSAGE="Help: Use arrow keys, Tab to switch, Space to mark, F-keys for actions."
+                ;;
+            $'\e[12~') # F2 View
+                STATUS_MESSAGE="View operation not implemented."
+                ;;
+            $'\e[13~') # F3 Edit
+                STATUS_MESSAGE="Edit operation not implemented."
+                ;;
+            $'\e[14~') # F4 MkDir
+                STATUS_MESSAGE="MkDir operation not implemented."
+                ;;
+            $'\e[15~') # F5 Copy
+                perform_file_operation "copy"
+                ;;
+            $'\e[17~') # F6 Move
+                perform_file_operation "move"
+                ;;
+            $'\e[18~') # F7 Delete
+                perform_file_operation "delete"
+                ;;
+            $'\e[19~') # F8 Back
+                navigate_pane "$ACTIVE_PANE_NAME" "back"
+                ;;
+            $'\e[21~') # F10 Quit
+                break
+                ;;
+
+            # Quit
+            'q')
+                break
+                ;;
         esac
     done
 }
 
-main "$@"
+# --- Script Entry Point ---
+# Ensure the script is not being sourced
+if [[ "${BASH_SOURCE[0]}" -ef "$0" ]]; then
+    main "$@"
+fi
