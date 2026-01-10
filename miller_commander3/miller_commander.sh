@@ -2,6 +2,9 @@
 # ==============================================================================
 # BASH MILLER COMMANDER (Complete with Advanced Navigation)
 # ==============================================================================
+# ==============================================================================
+# BASH MILLER COMMANDER (With Instant Resize Support)
+# ==============================================================================
 set -euo pipefail
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
@@ -12,6 +15,12 @@ if [ ! -x "$PANE_MANAGER_SCRIPT" ]; then
     echo "Error: The pane manager script '$PANE_MANAGER_SCRIPT' is not executable or not found." >&2
     exit 1
 fi
+# Global flag for resize
+NEEDS_REDRAW=0
+handle_resize() {
+    NEEDS_REDRAW=1
+}
+trap handle_resize SIGWINCH
 
 declare -A PANE_0 PANE_1
 ACTIVE_PANE_NAME="PANE_0"
@@ -337,49 +346,48 @@ update_line() {
     rm -f "$render_file"
 }
 
+
 # ---------- main ----------
 main() {
-    # Initial setup
     local start_dir_0=${1:-"$(pwd)"}
     local start_dir_1=${2:-"$HOME"}
 
-    # We need a dummy height for the very first init
-    local initial_height=$(tput lines)
-    local initial_width=$(tput cols)
+    # Initial dimension capture
+    local term_height=$(tput lines)
+    local term_width=$(tput cols)
+    local half_width=$(( (term_width - 1) / 2 ))
+    local pane_height=$((term_height - 2))
     
-    init_pane PANE_0 "$start_dir_0" "$((initial_height - 2))" "$(( (initial_width - 1) / 2 ))"
-    init_pane PANE_1 "$start_dir_1" "$((initial_height - 2))" "$(( (initial_width - 1) / 2 ))"
+    init_pane PANE_0 "$start_dir_0" "$pane_height" "$half_width"
+    init_pane PANE_1 "$start_dir_1" "$pane_height" "$half_width"
 
     draw_ui
     
     while true; do
-        # --- DYNAMIC DIMENSION UPDATE ---
-        # This ensures every loop respects the current terminal size
-        local term_height=$(tput lines)
-        local term_width=$(tput cols)
-        local half_width=$(( (term_width - 1) / 2 ))
-        local pane_height=$((term_height - 2))
-
-        local key
-        # Use a short timeout on read to allow the loop to cycle and 
-        # catch terminal resizes even if no key is pressed
-        if ! IFS= read -rsn1 -t 0.1 key; then
-            # If read timed out, check if dimensions changed
-            # (Simple way to handle SIGWINCH without complex traps)
-            key="RESIZE_CHECK" 
+        # 1. Check if a resize happened via the trap
+        if [[ $NEEDS_REDRAW -eq 1 ]]; then
+            term_height=$(tput lines)
+            term_width=$(tput cols)
+            half_width=$(( (term_width - 1) / 2 ))
+            pane_height=$((term_height - 2))
+            
+            # Refresh caches with new dimensions
+            refresh_panes
+            draw_ui
+            NEEDS_REDRAW=0
         fi
 
+        # 2. Read input with a small timeout to catch the SIGWINCH flag
+        local key
+        if ! IFS= read -rsn1 -t 0.2 key; then
+            continue # No key pressed, loop back to check NEEDS_REDRAW
+        fi
+
+        # 3. Handle escape sequences
         if [[ "$key" == $'\e' ]]; then
             local seq=""
             while read -rsn1 -t 0.005 char; do seq="$seq$char"; done
             key="$key$seq"
-        fi
-
-        # If it was just a timeout check, we only redraw if height/width changed
-        if [[ "$key" == "RESIZE_CHECK" ]]; then
-            # Optional: Add logic to check if $LINES or $COLUMNS changed
-            # For simplicity, we just continue the loop
-            continue
         fi
 
         STATUS_MESSAGE=""
@@ -392,7 +400,7 @@ main() {
             --scroll "${pane_ref[scroll_offset]}"
             --marks-file "${pane_ref[marks_file]}"
             --cache-file "${pane_ref[cache_file]}"
-            --height "$pane_height" # Now always current!
+            --height "$pane_height"
         )
 
         case "$key" in
@@ -450,8 +458,6 @@ main() {
                 local -n old_active_pane_ref=$old_active_pane_name
                 ACTIVE_PANE_NAME=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
                 local -n new_active_pane_ref=$ACTIVE_PANE_NAME
-                
-                # Use current half_width here
                 update_line "$old_active_pane_name" "${old_active_pane_ref[cursor_pos]}" "$([ "$old_active_pane_name" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))"
                 update_line "$ACTIVE_PANE_NAME" "${new_active_pane_ref[cursor_pos]}" "$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))"
                 ;;
@@ -466,8 +472,8 @@ main() {
                 refresh_panes
                 draw_ui
                 ;;
-            $'\eOP'|$'\e[11~') # F1
-                STATUS_MESSAGE="Arrows/PgUp/PgDn/Home/End: Nav, Tab: Switch, Space/Ins: Mark, F2-F7: Ops, F10: Exit"
+            $'\eOP'|$'\e[11~') # F1 Help
+                STATUS_MESSAGE="Nav: Arrows/PgUp/PgDn/Home/End. Tab: Switch. Space/Ins: Mark. F10: Exit."
                 draw_ui 
                 ;;
             $'\eOQ'|$'\e[12~') view_file; draw_ui ;;
@@ -479,8 +485,8 @@ main() {
             $'\e[21~'|$'\e[24~'|'q') break ;;
         esac
 
-        if [ -n "$lines_to_update_csv" ]; then
-            # Recalculate offset for partial update based on CURRENT half_width
+        # 4. Perform partial line updates if a full redraw wasn't triggered
+        if [ -n "$lines_to_update_csv" ] && [ "$NEEDS_REDRAW" -eq 0 ]; then
             local col_offset=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))
             IFS=',' read -ra lines_to_update_arr <<< "$lines_to_update_csv"
             for line_num in "${lines_to_update_arr[@]}"; do
@@ -489,6 +495,7 @@ main() {
         fi
     done
 }
+
 
 
 if [[ "${BASH_SOURCE[0]}" -ef "$0" ]]; then
