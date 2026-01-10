@@ -19,6 +19,7 @@ while [[ $# -gt 0 ]]; do
         --direction)    DIRECTION="$2"; shift 2 ;;
         --is-active)    IS_ACTIVE="$2"; shift 2 ;;
         --height)       PANE_HEIGHT="$2"; shift 2 ;;
+        --width)        PANE_WIDTH="$2"; shift 2 ;;
         *)              echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -40,7 +41,10 @@ is_marked() {
 cmd_init() {
     index_dir
     local total_items=$(wc -l < "$CACHE_FILE")
-    echo "dir='$PANE_DIR'; cursor_pos=$CURSOR_POS; scroll_offset=$SCROLL_OFFSET; total_items=$total_items"
+    printf "dir=%s\n" "$PANE_DIR"
+    printf "cursor_pos=%d\n" "$CURSOR_POS"
+    printf "scroll_offset=%d\n" "$SCROLL_OFFSET"
+    printf "total_items=%d\n" "$total_items"
 }
 
 cmd_navigate() {
@@ -49,9 +53,21 @@ cmd_navigate() {
 
     case "$DIRECTION" in
         up)
-            if [[ $CURSOR_POS -gt 0 ]]; then CURSOR_POS=$((CURSOR_POS - 1)); fi ;;
+            if [[ $CURSOR_POS -gt 0 ]]; then
+                CURSOR_POS=$((CURSOR_POS - 1))
+                if [[ $CURSOR_POS -lt $SCROLL_OFFSET ]]; then
+                    SCROLL_OFFSET=$CURSOR_POS
+                fi
+            fi
+            ;;
         down)
-            if [[ $CURSOR_POS -lt $((total_items - 1)) ]]; then CURSOR_POS=$((CURSOR_POS + 1)); fi ;;
+            if [[ $CURSOR_POS -lt $((total_items - 1)) ]]; then
+                CURSOR_POS=$((CURSOR_POS + 1))
+                if [[ $CURSOR_POS -ge $((SCROLL_OFFSET + PANE_HEIGHT)) ]]; then
+                    SCROLL_OFFSET=$((CURSOR_POS - PANE_HEIGHT + 1))
+                fi
+            fi
+            ;;
         enter)
             local relative_path
             relative_path=$(sed -n "$(( CURSOR_POS + 1 ))p" "$CACHE_FILE")
@@ -68,7 +84,10 @@ cmd_navigate() {
             ;;
     esac
     total_items=$(wc -l < "$CACHE_FILE")
-    echo "dir='$PANE_DIR'; cursor_pos=$CURSOR_POS; scroll_offset=$SCROLL_OFFSET; total_items=$total_items"
+    printf "dir=%s\n" "$PANE_DIR"
+    printf "cursor_pos=%d\n" "$CURSOR_POS"
+    printf "scroll_offset=%d\n" "$SCROLL_OFFSET"
+    printf "total_items=%d\n" "$total_items"
 }
 
 cmd_toggle_mark() {
@@ -89,7 +108,10 @@ cmd_toggle_mark() {
     total_items=$(wc -l < "$CACHE_FILE")
     if [[ $CURSOR_POS -lt $((total_items - 1)) ]]; then CURSOR_POS=$((CURSOR_POS + 1)); fi
 
-    echo "dir='$PANE_DIR'; cursor_pos=$CURSOR_POS; scroll_offset=$SCROLL_OFFSET; total_items=$total_items"
+    printf "dir=%s\n" "$PANE_DIR"
+    printf "cursor_pos=%d\n" "$CURSOR_POS"
+    printf "scroll_offset=%d\n" "$SCROLL_OFFSET"
+    printf "total_items=%d\n" "$total_items"
 }
 
 cmd_get_selection() {
@@ -120,7 +142,11 @@ cmd_get_pane_content() {
             local line="$item"
 
             # Truncate line if it's too long (leaving space for markers)
-            # This is a basic implementation. A real one would be more robust.
+            # Truncate line if it's too long
+            local max_len=$((PANE_WIDTH - 4)) # Account for prefix/suffix
+            if ((${#line} > max_len)); then
+                line="${line:0:$((max_len - 3))}..."
+            fi
 
             local prefix=""
             local suffix=""

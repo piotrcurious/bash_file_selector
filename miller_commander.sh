@@ -47,6 +47,17 @@ tput civis
 stty -echo
 
 # --- Pane Management ---
+# Securely updates a pane's state from the pane manager's output
+update_pane_state() {
+    local -n pane_ref=$1
+    local input_state="$2"
+
+    while IFS='=' read -r key value; do
+        if [[ -n "$key" ]]; then
+            pane_ref[$key]="$value"
+        fi
+    done <<< "$input_state"
+}
 # Initializes a pane's state using the pane manager script
 init_pane() {
     local -n pane_ref=$1 # Use a nameref to the associative array (PANE_0 or PANE_1)
@@ -65,13 +76,7 @@ init_pane() {
         --marks-file "${pane_ref[marks_file]}" \
         --cache-file "${pane_ref[cache_file]}")
 
-    # Source the returned state into the pane's associative array
-    # This is safe because we control the output of file_selector.sh
-    source <(echo "$new_state")
-    pane_ref[dir]="$dir"
-    pane_ref[cursor_pos]=$cursor_pos
-    pane_ref[scroll_offset]=$scroll_offset
-    pane_ref[total_items]=$total_items
+    update_pane_state "$1" "$new_state"
 }
 
 # Updates a pane's state based on a navigation action
@@ -80,19 +85,20 @@ navigate_pane() {
     local direction="$2"
 
     local new_state
+    local term_height
+    term_height=$(tput lines)
+    local pane_height=$((term_height - 3))
+
     new_state=$("$PANE_MANAGER_SCRIPT" navigate \
         --dir "${pane_ref[dir]}" \
         --cursor "${pane_ref[cursor_pos]}" \
         --scroll "${pane_ref[scroll_offset]}" \
         --marks-file "${pane_ref[marks_file]}" \
         --cache-file "${pane_ref[cache_file]}" \
-        --direction "$direction")
+        --direction "$direction" \
+        --height "$pane_height")
 
-    source <(echo "$new_state")
-    pane_ref[dir]="$dir"
-    pane_ref[cursor_pos]=$cursor_pos
-    pane_ref[scroll_offset]=$scroll_offset
-    pane_ref[total_items]=$total_items
+    update_pane_state "$1" "$new_state"
 }
 
 # --- File Operations ---
@@ -183,7 +189,8 @@ draw_ui() {
         --marks-file "${PANE_0[marks_file]}" \
         --cache-file "${PANE_0[cache_file]}" \
         --is-active "$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "true" || echo "false")" \
-        --height "$pane_height")
+        --height "$pane_height" \
+        --width "$half_width")
 
     local pane1_content
     pane1_content=$("$PANE_MANAGER_SCRIPT" get_pane_content \
@@ -193,10 +200,11 @@ draw_ui() {
         --marks-file "${PANE_1[marks_file]}" \
         --cache-file "${PANE_1[cache_file]}" \
         --is-active "$([ "$ACTIVE_PANE_NAME" == "PANE_1" ] && echo "true" || echo "false")" \
-        --height "$pane_height")
+        --height "$pane_height" \
+        --width "$half_width")
 
     # Use paste to draw columns side-by-side
-    paste <(echo "$pane0_content") <(echo "$pane1_content")
+    paste -d '|' <(echo "$pane0_content") <(echo "$pane1_content")
 
     # --- Draw Bottom Bar ---
     tput cup $((term_height - 1)) 0
@@ -265,12 +273,7 @@ main() {
                     --marks-file "${pane_ref[marks_file]}" \
                     --cache-file "${pane_ref[cache_file]}")
 
-                # Source the new state to update the pane
-                source <(echo "$new_state")
-                pane_ref[dir]="$dir"
-                pane_ref[cursor_pos]=$cursor_pos
-                pane_ref[scroll_offset]=$scroll_offset
-                pane_ref[total_items]=$total_items
+                update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
                 ;;
 
             # Function Keys
