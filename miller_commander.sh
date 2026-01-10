@@ -204,7 +204,7 @@ draw_ui() {
         --width "$half_width")
 
     # Use paste to draw columns side-by-side
-    paste -d '|' <(echo "$pane0_content") <(echo "$pane1_content")
+    paste -d ' | ' <(echo "$pane0_content") <(echo "$pane1_content")
 
     # --- Draw Bottom Bar ---
     tput cup $((term_height - 1)) 0

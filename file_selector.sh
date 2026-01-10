@@ -126,11 +126,6 @@ cmd_get_selection() {
 
 # --- UI Drawing Command ---
 cmd_get_pane_content() {
-    # Define colors
-    local color_reset="\e[0m"
-    local color_cursor="\e[7m" # Reverse video
-    local color_marked="\e[33m" # Yellow
-
     local line_counter=0
     local display_counter=0
 
@@ -139,47 +134,53 @@ cmd_get_pane_content() {
         if [[ $line_counter -ge $SCROLL_OFFSET && $display_counter -lt $PANE_HEIGHT ]]; then
             local full_path
             full_path=$(realpath "$PANE_DIR/$item")
-            local line="$item"
 
-            # Truncate line if it's too long (leaving space for markers)
-            # Truncate line if it's too long
-            local max_len=$((PANE_WIDTH - 4)) # Account for prefix/suffix
-            if ((${#line} > max_len)); then
-                line="${line:0:$((max_len - 3))}..."
-            fi
-
-            local prefix=""
-            local suffix=""
-
-            # Style the cursor line
-            if [[ $line_counter -eq $CURSOR_POS && "$IS_ACTIVE" == "true" ]]; then
-                prefix="$color_cursor"
-                suffix="$color_reset"
-            fi
-
-            # Style marked items
+            # Build the base display line (item + markers)
+            local plain_display
             if is_marked "$full_path"; then
-                prefix="$prefix$color_marked"
-                suffix="$color_reset$suffix"
-                line="* $line" # Add a visual marker
+                plain_display="* $item"
             else
-                line="  $line"
+                plain_display="  $item"
             fi
-
-            # Append '/' to directories
             if [[ -d "$full_path" && "$item" != ".." ]]; then
-                line="$line/"
+                plain_display="$plain_display/"
             fi
 
-            echo -e "${prefix}${line}${suffix}"
+            # Truncate if necessary
+            if ((${#plain_display} >= PANE_WIDTH)); then
+                plain_display="${plain_display:0:$((PANE_WIDTH - 4))}..."
+            fi
+
+            # Build the final formatted line with colors
+            local formatted_line="$plain_display"
+            if is_marked "$full_path"; then
+                 # Add color to the whole line if marked
+                formatted_line="\e[33m${formatted_line}\e[0m"
+            fi
+            if [[ $line_counter -eq $CURSOR_POS && "$IS_ACTIVE" == "true" ]]; then
+                # Add cursor highlight. This will wrap the (potentially already colored) line
+                formatted_line="\e[7m${formatted_line}\e[0m"
+            fi
+
+            # Now, calculate padding based on the plain line's visible width
+            local padding_len=$((PANE_WIDTH - ${#plain_display}))
+            if [[ $padding_len -lt 0 ]]; then padding_len=0; fi
+            local padding
+            padding=$(printf "%*s" $padding_len "")
+
+            # Print the final, padded, formatted line
+            echo -e "${formatted_line}${padding}"
+
             display_counter=$((display_counter + 1))
         fi
         line_counter=$((line_counter + 1))
     done < "$CACHE_FILE"
 
-    # Fill remaining lines of the pane with empty lines
+    # Fill remaining lines with empty, padded space
+    local fill_line
+    fill_line=$(printf "%*s" "$PANE_WIDTH" "")
     while [[ $display_counter -lt $PANE_HEIGHT ]]; do
-        echo ""
+        echo "$fill_line"
         display_counter=$((display_counter + 1))
     done
 }
