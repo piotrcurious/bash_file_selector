@@ -128,8 +128,7 @@ render_pane_to_file() {
 # ---------- AWK compositor (ANSI-aware, called once per frame) ----------
 # We'll call awk with variables pointing to the two render files, widths and height.
 # The awk program:
-AWK_COMPOSITOR='
-BEGIN {
+AWK_COMPOSITOR='BEGIN {
   L = ARGV[1]; R = ARGV[2]; LW = ARGV[3]+0; RW = ARGV[4]+0; H = ARGV[5]+0;
   # remove ARGV entries so awk does not try to read them as input files
   for(i=0;i<6;i++) ARGV[i]="";
@@ -356,10 +355,13 @@ main() {
                 draw_ui
                 ;;
             $'\t')
-                local old_active_pane=$ACTIVE_PANE_NAME
+                local old_active_pane_name=$ACTIVE_PANE_NAME
+                local -n old_active_pane_ref=$old_active_pane_name
                 ACTIVE_PANE_NAME=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
-                update_line "$old_active_pane" "${!old_active_pane.cursor_pos}" "$([ "$old_active_pane" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))"
-                update_line "$ACTIVE_PANE_NAME" "${!ACTIVE_PANE_NAME.cursor_pos}" "$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))"
+                local -n new_active_pane_ref=$ACTIVE_PANE_NAME
+
+                update_line "$old_active_pane_name" "${old_active_pane_ref[cursor_pos]}" "$([ "$old_active_pane_name" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))"
+                update_line "$ACTIVE_PANE_NAME" "${new_active_pane_ref[cursor_pos]}" "$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))"
                 ;;
             ' ')
                 local new_state

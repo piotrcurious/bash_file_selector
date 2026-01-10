@@ -102,8 +102,23 @@ else
     exit 1
 fi
 
-# Test 5: Quit
-echo -n "Test 5: 'q' quits the application... "
+# Test 5: Tab navigation
+echo -n "Test 5: Tab navigation switches panes... "
+send_keys $'\t'
+sleep 1
+DUMP_5=$(capture_screen)
+if echo "$DUMP_5" | grep -q "sdir1/"; then
+    echo "PASS"
+else
+    echo "FAIL"
+    echo "--- Captured Screen ---"
+    echo "$DUMP_5"
+    echo "-----------------------"
+    exit 1
+fi
+
+# Test 6: Quit
+echo -n "Test 6: 'q' quits the application... "
 send_keys "q"
 sleep 1
 if ! screen -list | grep -q "$SESSION_NAME"; then
