@@ -28,6 +28,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
+# If terminal resized, redraw immediately
+on_sigwinch() {
+    # call the full redraw which recalculates sizes inside draw_ui
+    draw_ui
+}
+trap on_sigwinch SIGWINCH
+
 # Enter alt screen, hide cursor, disable echo/canonical
 tput smcup
 tput civis
@@ -100,7 +107,7 @@ perform_file_operation() {
     STATUS_MESSAGE="Successfully performed '$operation' on $success_count file(s)."
     if [ $error_count -gt 0 ]; then STATUS_MESSAGE="$STATUS_MESSAGE Errors on $error_count file(s)."; fi
 
-    # reinit both panes so they refresh their state
+    # reinit both panes so they refresh their state: recalc terminal size now
     local term_height=$(tput lines)
     local term_width=$(tput cols)
     local half_width=$(( (term_width - 1) / 2 ))
@@ -288,13 +295,18 @@ update_line() {
     display_line=$(awk -v LW="$half_width" -v RW="0" -v H="1" \
         -f <(printf '%s\n' "$AWK_COMPOSITOR") "$render_file" "/dev/null" "$half_width" "0" "1")
 
-    tput cup "$((line_num - pane_ref[scroll_offset]))" "$col_offset"
+    # compute visible row relative to pane top and ensure it's not negative
+    local visible_row=$(( line_num - pane_ref[scroll_offset] ))
+    if [ "$visible_row" -lt 0 ]; then visible_row=0; fi
+
+    tput cup "$visible_row" "$col_offset"
     printf "%s" "${display_line%│}"
     rm -f "$render_file"
 }
 
 # ---------- main ----------
 main() {
+    # compute initial sizes (will be refreshed per-loop)
     local term_height=$(tput lines)
     local term_width=$(tput cols)
     local half_width=$(( (term_width - 1) / 2 ))
@@ -316,10 +328,17 @@ main() {
             key="$key$seq"
         fi
 
+        # Recompute terminal geometry on every loop iteration so partial updates use up-to-date sizes.
+        term_height=$(tput lines)
+        term_width=$(tput cols)
+        half_width=$(( (term_width - 1) / 2 ))
+        pane_height=$((term_height - 2))
+
         STATUS_MESSAGE=""
         local -n pane_ref=$ACTIVE_PANE_NAME
         local lines_to_update_csv=""
 
+        # IMPORTANT: rebuild common_args with fresh pane_height and half_width each loop.
         local common_args=(
             --dir "${pane_ref[dir]}"
             --cursor "${pane_ref[cursor_pos]}"
@@ -327,6 +346,7 @@ main() {
             --marks-file "${pane_ref[marks_file]}"
             --cache-file "${pane_ref[cache_file]}"
             --height "$pane_height"
+            --width "$half_width"
         )
 
         case "$key" in
@@ -360,6 +380,7 @@ main() {
                 ACTIVE_PANE_NAME=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
                 local -n new_active_pane_ref=$ACTIVE_PANE_NAME
 
+                # use the current half_width for column offsets
                 update_line "$old_active_pane_name" "${old_active_pane_ref[cursor_pos]}" "$([ "$old_active_pane_name" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))"
                 update_line "$ACTIVE_PANE_NAME" "${new_active_pane_ref[cursor_pos]}" "$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))"
                 ;;
