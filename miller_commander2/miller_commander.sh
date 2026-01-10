@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# BASH MILLER COMMANDER (awk-only compositor, no perl)
+# BASH MILLER COMMANDER (Expanded)
+# Complete Function Key Support, External Editor, and Forked Viewer
 # ==============================================================================
 set -euo pipefail
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 PANE_MANAGER_SCRIPT="$SCRIPT_DIR/file_selector.sh"
+
+# Check dependencies
 if [ ! -x "$PANE_MANAGER_SCRIPT" ]; then
     echo "Error: The pane manager script '$PANE_MANAGER_SCRIPT' is not executable or not found." >&2
     exit 1
@@ -22,25 +25,24 @@ cleanup() {
     stty "$OLD_STTY" 2>/dev/null || true
     tput cnorm 2>/dev/null || true
     tput rmcup 2>/dev/null || true
-
+    
+    # Clean temp files
     rm -f "${PANE_0[marks_file]:-}" "${PANE_0[cache_file]:-}" "${PANE_0[render_file]:-}" 2>/dev/null || true
     rm -f "${PANE_1[marks_file]:-}" "${PANE_1[cache_file]:-}" "${PANE_1[render_file]:-}" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM HUP
-
-# If terminal resized, redraw immediately
-on_sigwinch() {
-    # call the full redraw which recalculates sizes inside draw_ui
-    draw_ui
-}
-trap on_sigwinch SIGWINCH
 
 # Enter alt screen, hide cursor, disable echo/canonical
 tput smcup
 tput civis
 stty -echo -icanon -ixon 2>/dev/null || true
 
-# ---------- helpers ----------
+# ==============================================================================
+#  HELPER FUNCTIONS
+# ==============================================================================
+
+# --- UI State Management ---
+
 update_pane_state() {
     local -n pane_ref=$1
     local input_state="$2"
@@ -74,6 +76,152 @@ init_pane() {
     update_pane_state "$1" "$new_state"
 }
 
+get_active_file_path() {
+    local -n active_pane_ref=$ACTIVE_PANE_NAME
+    # Helper: Extract single file path from pane manager selection logic
+    # Note: We use the 'get_selection' but restrict it to the cursor if no marks
+    local selection
+    selection=$("$PANE_MANAGER_SCRIPT" get_selection \
+        --dir "${active_pane_ref[dir]}" \
+        --cursor "${active_pane_ref[cursor_pos]}" \
+        --marks-file "${active_pane_ref[marks_file]}" \
+        --cache-file "${active_pane_ref[cache_file]}" 2>/dev/null || true)
+    
+    # If multiple selected (via marks), just return the first one, 
+    # or empty if nothing valid.
+    if [ -n "$selection" ]; then
+        echo "$selection" | head -n1
+    else
+        echo ""
+    fi
+}
+
+refresh_panes() {
+    local term_height=$(tput lines)
+    local term_width=$(tput cols)
+    local half_width=$(( (term_width - 1) / 2 ))
+    local pane_height=$((term_height - 2))
+    
+    local inactive_pane_name=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
+    local -n active_pane_ref=$ACTIVE_PANE_NAME
+    local -n inactive_pane_ref=$inactive_pane_name
+
+    init_pane "$ACTIVE_PANE_NAME" "${active_pane_ref[dir]}" "$pane_height" "$half_width"
+    init_pane "$inactive_pane_name" "${inactive_pane_ref[dir]}" "$pane_height" "$half_width"
+}
+
+# --- External Interactions (Editors/Viewers) ---
+
+# Temporarily leave TUI mode to run a foreground interactive command (Editor)
+suspend_and_run() {
+    local cmd="$1"
+    shift
+    
+    # 1. Restore terminal
+    tput rmcup
+    tput cnorm
+    stty "$OLD_STTY"
+
+    # 2. Run command
+    "$cmd" "$@" || true
+
+    # 3. Resume TUI
+    tput smcup
+    tput civis
+    stty -echo -icanon -ixon 2>/dev/null || true
+    
+    # Force full redraw
+    refresh_panes
+    draw_ui
+}
+
+# Prompt user for string input (at bottom of screen)
+input_prompt() {
+    local prompt_text="$1"
+    local result_var="$2"
+    
+    local term_height=$(tput lines)
+    
+    # Move to footer
+    tput cup $((term_height - 1)) 0
+    tput el
+    printf "%s" "$prompt_text"
+    tput cnorm # Show cursor
+    
+    # We must enable echo/canon to allow user typing/backspacing
+    stty echo icanon
+    
+    read -r input_val
+    
+    # Restore raw mode
+    stty -echo -icanon -ixon
+    tput civis
+    
+    eval "$result_var=\"\$input_val\""
+}
+
+# F2: View File (Forked/External)
+view_file() {
+    local filepath
+    filepath=$(get_active_file_path)
+    
+    if [ -z "$filepath" ]; then
+        STATUS_MESSAGE="No file selected to view."
+        return
+    fi
+
+    # Try to use system default opener (xdg-open or open)
+    # This forks the process so the terminal isn't blocked, 
+    # relying on the OS to pick the right program.
+    if command -v xdg-open &>/dev/null; then
+        setsid xdg-open "$filepath" >/dev/null 2>&1 &
+        STATUS_MESSAGE="Opened '$filepath' externally."
+    elif command -v open &>/dev/null; then
+        open "$filepath" >/dev/null 2>&1 &
+        STATUS_MESSAGE="Opened '$filepath' externally."
+    else
+        # Fallback: internal TUI viewer (less)
+        STATUS_MESSAGE="External opener not found. Using pager."
+        suspend_and_run "${PAGER:-less}" "$filepath"
+    fi
+}
+
+# F3: Edit File
+edit_file() {
+    local filepath
+    filepath=$(get_active_file_path)
+    
+    if [ -z "$filepath" ] || [ -d "$filepath" ]; then
+        STATUS_MESSAGE="Cannot edit: Is a directory or nothing selected."
+        return
+    fi
+    
+    # Use environment EDITOR or default to nano
+    suspend_and_run "${EDITOR:-nano}" "$filepath"
+    STATUS_MESSAGE="Edited '$filepath'."
+}
+
+# F4: Make Directory
+make_directory() {
+    local -n active_pane_ref=$ACTIVE_PANE_NAME
+    local current_dir="${active_pane_ref[dir]}"
+    local dirname=""
+    
+    input_prompt "MkDir: " dirname
+    
+    if [ -n "$dirname" ]; then
+        if mkdir -p "$current_dir/$dirname"; then
+            STATUS_MESSAGE="Created directory: $dirname"
+            refresh_panes
+        else
+            STATUS_MESSAGE="Error creating directory."
+        fi
+    else
+        STATUS_MESSAGE="MkDir cancelled."
+    fi
+}
+
+# F5/F6/F7 Operations
 perform_file_operation() {
     local operation="$1"
     local -n active_pane_ref=$ACTIVE_PANE_NAME
@@ -107,13 +255,7 @@ perform_file_operation() {
     STATUS_MESSAGE="Successfully performed '$operation' on $success_count file(s)."
     if [ $error_count -gt 0 ]; then STATUS_MESSAGE="$STATUS_MESSAGE Errors on $error_count file(s)."; fi
 
-    # reinit both panes so they refresh their state: recalc terminal size now
-    local term_height=$(tput lines)
-    local term_width=$(tput cols)
-    local half_width=$(( (term_width - 1) / 2 ))
-    local pane_height=$((term_height - 2))
-    init_pane "$ACTIVE_PANE_NAME" "${active_pane_ref[dir]}" "$pane_height" "$half_width"
-    init_pane "$inactive_pane_name" "${inactive_pane_ref[dir]}" "$pane_height" "$half_width"
+    refresh_panes
 }
 
 render_pane_to_file() {
@@ -133,21 +275,11 @@ render_pane_to_file() {
 }
 
 # ---------- AWK compositor (ANSI-aware, called once per frame) ----------
-# We'll call awk with variables pointing to the two render files, widths and height.
-# The awk program:
 AWK_COMPOSITOR='BEGIN {
   L = ARGV[1]; R = ARGV[2]; LW = ARGV[3]+0; RW = ARGV[4]+0; H = ARGV[5]+0;
-  # remove ARGV entries so awk does not try to read them as input files
   for(i=0;i<6;i++) ARGV[i]="";
-  # Read left file
-  lcount = 0;
-  while ((getline line < L) > 0) { lcount++; Larr[lcount] = line }
-  close(L)
-  # Read right file
-  rcount = 0;
-  while ((getline line < R) > 0) { rcount++; Rarr[rcount] = line }
-  close(R)
-  # Precompile ANSI regex
+  lcount = 0; while ((getline line < L) > 0) { lcount++; Larr[lcount] = line } close(L)
+  rcount = 0; while ((getline line < R) > 0) { rcount++; Rarr[rcount] = line } close(R)
   ansi_re = "\033\\[[0-9;:?]*[A-Za-z]"
   for (i = 1; i <= H; i++) {
     l = (i <= lcount ? Larr[i] : "")
@@ -158,58 +290,20 @@ AWK_COMPOSITOR='BEGIN {
   }
   exit
 }
-
-function strip_ansi(s,    t) {
-  t = s
-  gsub(/\033\[[0-9;:?]*[A-Za-z]/, "", t)
-  return t
-}
-
-function vislen(s,    st) {
-  st = strip_ansi(s)
-  return length(st)
-}
-
-# fmt: preserve ANSI sequences, truncate/pad to visible width w
-function fmt(s, w, ansi_re,    v, out, rem, matchpos, matchlen, token, mpos, need, fmtstr) {
+function strip_ansi(s, t) { t = s; gsub(/\033\[[0-9;:?]*[A-Za-z]/, "", t); return t }
+function vislen(s) { return length(strip_ansi(s)) }
+function fmt(s, w, ansi_re, v, out, rem, matchpos, matchlen, token, count, need) {
   v = vislen(s)
   if (v == w) return s
   if (v < w) {
-    need = w - v
-    fmtstr = sprintf("%%-%ds", w)   # left-pad to width w
-    # AWK sprintf will pad based on bytes; but we want to append spaces, so do it manually
-    out = s
-    for (j = 0; j < need; j++) out = out sprintf(" ")
-    return out
+    need = w - v; out = s; for (j = 0; j < need; j++) out = out " "; return out
   }
-  out = ""
-  rem = s
-  count = 0
-  # Loop until visible width reached or no rem
+  out = ""; rem = s; count = 0
   while (length(rem) > 0 && count < w) {
-    # find ANSI match anywhere in rem
     if (match(rem, ansi_re)) {
-      mpos = RSTART
-      matchlen = RLENGTH
-      if (mpos == 1) {
-        token = substr(rem, 1, matchlen)   # ANSI at head
-        out = out token
-        rem = substr(rem, matchlen+1)
-        continue
-      } else {
-        # take first character before ansi
-        token = substr(rem, 1, 1)
-        out = out token
-        rem = substr(rem, 2)
-        count++
-        continue
-      }
-    } else {
-      # no ansi anywhere -- copy as many characters as needed
-      need = w - count
-      out = out substr(rem, 1, need)
-      break
-    }
+      if (RSTART == 1) { out = out substr(rem, 1, RLENGTH); rem = substr(rem, RLENGTH+1); continue }
+      else { out = out substr(rem, 1, 1); rem = substr(rem, 2); count++; continue }
+    } else { need = w - count; out = out substr(rem, 1, need); break }
   }
   return out
 }
@@ -230,37 +324,28 @@ draw_ui() {
 
     local pane0_content pane1_content
     pane0_content=$("$PANE_MANAGER_SCRIPT" get_pane_content \
-        --dir "${PANE_0[dir]}" \
-        --cursor "${PANE_0[cursor_pos]}" \
-        --scroll "${PANE_0[scroll_offset]}" \
-        --marks-file "${PANE_0[marks_file]}" \
-        --cache-file "${PANE_0[cache_file]}" \
+        --dir "${PANE_0[dir]}" --cursor "${PANE_0[cursor_pos]}" --scroll "${PANE_0[scroll_offset]}" \
+        --marks-file "${PANE_0[marks_file]}" --cache-file "${PANE_0[cache_file]}" \
         --is-active "$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "true" || echo "false")" \
-        --height "$pane_height" \
-        --width "$half_width" 2>/dev/null || true)
+        --height "$pane_height" --width "$half_width" 2>/dev/null || true)
 
     pane1_content=$("$PANE_MANAGER_SCRIPT" get_pane_content \
-        --dir "${PANE_1[dir]}" \
-        --cursor "${PANE_1[cursor_pos]}" \
-        --scroll "${PANE_1[scroll_offset]}" \
-        --marks-file "${PANE_1[marks_file]}" \
-        --cache-file "${PANE_1[cache_file]}" \
+        --dir "${PANE_1[dir]}" --cursor "${PANE_1[cursor_pos]}" --scroll "${PANE_1[scroll_offset]}" \
+        --marks-file "${PANE_1[marks_file]}" --cache-file "${PANE_1[cache_file]}" \
         --is-active "$([ "$ACTIVE_PANE_NAME" == "PANE_1" ] && echo "true" || echo "false")" \
-        --height "$pane_height" \
-        --width "$half_width" 2>/dev/null || true)
+        --height "$pane_height" --width "$half_width" 2>/dev/null || true)
 
     render_pane_to_file "$pane0_content" "${PANE_0[render_file]}" "$half_width" "$pane_height"
     render_pane_to_file "$pane1_content" "${PANE_1[render_file]}" "$half_width" "$pane_height"
 
-    # call the awk compositor once per frame (fast, no perl)
     awk -v LW="$half_width" -v RW="$half_width" -v H="$pane_height" \
         -f <(printf '%s\n' "$AWK_COMPOSITOR") "${PANE_0[render_file]}" "${PANE_1[render_file]}" "$half_width" "$half_width" "$pane_height"
 
-    # draw footer explicitly avoiding accidental scroll
     tput cup $((term_height - 2)) 0
     tput el
     printf " %s\n" "$STATUS_MESSAGE"
     tput el
+    # Updated footer to reflect full functionality
     printf " F1 Help  F2 View  F3 Edit  F4 MkDir  F5 Copy  F6 Move  F7 Delete  F10 Quit"
 }
 
@@ -277,14 +362,10 @@ update_line() {
 
     local line_content
     line_content=$("$PANE_MANAGER_SCRIPT" get_line \
-        --dir "${pane_ref[dir]}" \
-        --cursor "${pane_ref[cursor_pos]}" \
-        --scroll "${pane_ref[scroll_offset]}" \
-        --marks-file "${pane_ref[marks_file]}" \
-        --cache-file "${pane_ref[cache_file]}" \
+        --dir "${pane_ref[dir]}" --cursor "${pane_ref[cursor_pos]}" --scroll "${pane_ref[scroll_offset]}" \
+        --marks-file "${pane_ref[marks_file]}" --cache-file "${pane_ref[cache_file]}" \
         --is-active "$([ "$ACTIVE_PANE_NAME" == "$pane_name" ] && echo "true" || echo "false")" \
-        --height "$pane_height" \
-        --width "$half_width" \
+        --height "$pane_height" --width "$half_width" \
         --line "$line_num" 2>/dev/null || true)
 
     local render_file
@@ -295,18 +376,13 @@ update_line() {
     display_line=$(awk -v LW="$half_width" -v RW="0" -v H="1" \
         -f <(printf '%s\n' "$AWK_COMPOSITOR") "$render_file" "/dev/null" "$half_width" "0" "1")
 
-    # compute visible row relative to pane top and ensure it's not negative
-    local visible_row=$(( line_num - pane_ref[scroll_offset] ))
-    if [ "$visible_row" -lt 0 ]; then visible_row=0; fi
-
-    tput cup "$visible_row" "$col_offset"
+    tput cup "$((line_num - pane_ref[scroll_offset]))" "$col_offset"
     printf "%s" "${display_line%│}"
     rm -f "$render_file"
 }
 
 # ---------- main ----------
 main() {
-    # compute initial sizes (will be refreshed per-loop)
     local term_height=$(tput lines)
     local term_width=$(tput cols)
     local half_width=$(( (term_width - 1) / 2 ))
@@ -322,23 +398,18 @@ main() {
         local key
         IFS= read -rsn1 key || key=""
 
+        # Read escaped sequences (e.g. arrow keys, F-keys)
         if [[ "$key" == $'\e' ]]; then
             local seq=""
+            # Small timeout to read remaining sequence bytes
             while read -rsn1 -t 0.005 char; do seq="$seq$char"; done
             key="$key$seq"
         fi
-
-        # Recompute terminal geometry on every loop iteration so partial updates use up-to-date sizes.
-        term_height=$(tput lines)
-        term_width=$(tput cols)
-        half_width=$(( (term_width - 1) / 2 ))
-        pane_height=$((term_height - 2))
 
         STATUS_MESSAGE=""
         local -n pane_ref=$ACTIVE_PANE_NAME
         local lines_to_update_csv=""
 
-        # IMPORTANT: rebuild common_args with fresh pane_height and half_width each loop.
         local common_args=(
             --dir "${pane_ref[dir]}"
             --cursor "${pane_ref[cursor_pos]}"
@@ -346,55 +417,98 @@ main() {
             --marks-file "${pane_ref[marks_file]}"
             --cache-file "${pane_ref[cache_file]}"
             --height "$pane_height"
-            --width "$half_width"
         )
 
         case "$key" in
-            $'\e[A')
+            # --- Navigation ---
+            $'\e[A') # Up
                 local new_state
                 new_state=$("$PANE_MANAGER_SCRIPT" navigate --direction "up" "${common_args[@]}" 2>/dev/null || true)
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
                 lines_to_update_csv=${pane_ref[lines_to_update]}
                 ;;
-            $'\e[B')
+            $'\e[B') # Down
                 local new_state
                 new_state=$("$PANE_MANAGER_SCRIPT" navigate --direction "down" "${common_args[@]}" 2>/dev/null || true)
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
                 lines_to_update_csv=${pane_ref[lines_to_update]}
                 ;;
-            $'\e[C'|'')
+            $'\e[C'|'') # Enter
                 local new_state
                 new_state=$("$PANE_MANAGER_SCRIPT" navigate --direction "enter" "${common_args[@]}" 2>/dev/null || true)
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
                 draw_ui
                 ;;
-            $'\e[D')
+            $'\e[D') # Back
                 local new_state
                 new_state=$("$PANE_MANAGER_SCRIPT" navigate --direction "back" "${common_args[@]}" 2>/dev/null || true)
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
                 draw_ui
                 ;;
-            $'\t')
+            $'\t') # Tab
                 local old_active_pane_name=$ACTIVE_PANE_NAME
                 local -n old_active_pane_ref=$old_active_pane_name
                 ACTIVE_PANE_NAME=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
                 local -n new_active_pane_ref=$ACTIVE_PANE_NAME
 
-                # use the current half_width for column offsets
                 update_line "$old_active_pane_name" "${old_active_pane_ref[cursor_pos]}" "$([ "$old_active_pane_name" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))"
                 update_line "$ACTIVE_PANE_NAME" "${new_active_pane_ref[cursor_pos]}" "$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo 0 || echo $((half_width + 1)))"
                 ;;
-            ' ')
+            ' ') # Space (Mark)
                 local new_state
                 new_state=$("$PANE_MANAGER_SCRIPT" toggle_mark "${common_args[@]}" 2>/dev/null || true)
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
                 lines_to_update_csv=${pane_ref[lines_to_update]}
                 ;;
-            $'\e[11~') STATUS_MESSAGE="Help: arrows, Tab to switch, Space to mark, F-keys."; draw_ui ;;
-            $'\e[15~') perform_file_operation "copy"; draw_ui ;;
-            $'\e[17~') perform_file_operation "move"; draw_ui ;;
-            $'\e[18~') perform_file_operation "delete"; draw_ui ;;
-            $'\e[21~'|'q') break ;;
+            
+            # --- F-Keys (Covering variations) ---
+            
+            # F1 (Help)
+            $'\eOP'|$'\e[11~') 
+                STATUS_MESSAGE="Keys: Arrows/Enter, Tab: Switch, Space: Mark, F2: View, F3: Edit, F4: MkDir, F5-7: Ops"
+                draw_ui 
+                ;;
+                
+            # F2 (View - Forked)
+            $'\eOQ'|$'\e[12~') 
+                view_file
+                draw_ui 
+                ;;
+                
+            # F3 (Edit - Nano/Custom)
+            $'\eOR'|$'\e[13~') 
+                edit_file
+                draw_ui 
+                ;;
+                
+            # F4 (MkDir)
+            $'\eOS'|$'\e[14~') 
+                make_directory
+                draw_ui 
+                ;;
+                
+            # F5 (Copy)
+            $'\e[15~') 
+                perform_file_operation "copy"
+                draw_ui 
+                ;;
+                
+            # F6 (Move)
+            $'\e[17~') 
+                perform_file_operation "move"
+                draw_ui 
+                ;;
+                
+            # F7 (Delete)
+            $'\e[18~') 
+                perform_file_operation "delete"
+                draw_ui 
+                ;;
+                
+            # F10 (Quit)
+            $'\e[21~'|$'\e[24~'|'q') 
+                break 
+                ;;
         esac
 
         if [ -n "$lines_to_update_csv" ]; then
@@ -404,7 +518,8 @@ main() {
                 update_line "$ACTIVE_PANE_NAME" "$line_num" "$col_offset"
             done
         else
-            draw_ui
+            # Only full redraw if explicitly needed (draw_ui called inside case)
+            :
         fi
     done
 }
