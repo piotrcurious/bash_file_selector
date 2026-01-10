@@ -289,7 +289,7 @@ update_line() {
         -f <(printf '%s\n' "$AWK_COMPOSITOR") "$render_file" "/dev/null" "$half_width" "0" "1")
 
     tput cup "$((line_num - pane_ref[scroll_offset]))" "$col_offset"
-    printf "%s" "$display_line"
+    printf "%s" "${display_line%│}"
     rm -f "$render_file"
 }
 
@@ -312,7 +312,7 @@ main() {
 
         if [[ "$key" == $'\e' ]]; then
             local seq=""
-            while read -rsn1 -t 0.1 char; do seq="$seq$char"; done
+            while read -rsn1 -t 0.005 char; do seq="$seq$char"; done
             key="$key$seq"
         fi
 
