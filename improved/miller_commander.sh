@@ -1,19 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# BASH MILLER COMMANDER - Dual-Pane File Manager
-# Version: 1.0.0
-# Description: Terminal-based file manager with advanced navigation and
-#              instant resize support
+# BASH MILLER COMMANDER (Complete with Advanced Navigation)
+# ==============================================================================
+# ==============================================================================
+# BASH MILLER COMMANDER (With Instant Resize Support)
 # ==============================================================================
 set -euo pipefail
-
-# ==============================================================================
-# CONSTANTS AND CONFIGURATION
-# ==============================================================================
-
-readonly FOOTER_HEIGHT=2
-readonly INPUT_TIMEOUT=0.2
-readonly ESCAPE_SEQ_TIMEOUT=0.005
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 PANE_MANAGER_SCRIPT="$SCRIPT_DIR/file_selector.sh"
@@ -30,43 +22,21 @@ handle_resize() {
 }
 trap handle_resize SIGWINCH
 
-# Debug mode (set DEBUG=1 to enable)
-readonly DEBUG=${DEBUG:-0}
-readonly LOG_FILE="$HOME/.miller_commander.log"
-
-# Log debug messages to file
-# Arguments:
-#   $@ - Message to log
-debug_log() {
-    if [[ $DEBUG -eq 1 ]]; then
-        printf "[%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
-    fi
-}
-
-# Log error messages
-# Arguments:
-#   $@ - Error message
-error_log() {
-    printf "[ERROR] %s\n" "$*" >> "$LOG_FILE"
-}
-
 declare -A PANE_0 PANE_1
 ACTIVE_PANE_NAME="PANE_0"
 STATUS_MESSAGE=""
 
 # Save stty so we can restore exact original state on exit
 OLD_STTY=$(stty -g)
-TEMP_DIR=$(mktemp -d)
 
 cleanup() {
     stty "$OLD_STTY" 2>/dev/null || true
     tput cnorm 2>/dev/null || true
     tput rmcup 2>/dev/null || true
 
-    # Clean temp directory
-    if [[ -n "$TEMP_DIR" ]] && [[ -d "$TEMP_DIR" ]]; then
-        rm -rf "$TEMP_DIR" 2>/dev/null || true
-    fi
+    # Clean temp files
+    rm -f "${PANE_0[marks_file]:-}" "${PANE_0[cache_file]:-}" "${PANE_0[render_file]:-}" 2>/dev/null || true
+    rm -f "${PANE_1[marks_file]:-}" "${PANE_1[cache_file]:-}" "${PANE_1[render_file]:-}" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM HUP
 
@@ -78,27 +48,6 @@ stty -echo -icanon -ixon 2>/dev/null || true
 # ==============================================================================
 #  HELPER FUNCTIONS
 # ==============================================================================
-
-# Validate directory name for safety
-# Arguments:
-#   $1 - Directory name to validate
-# Returns:
-#   0 if valid, 1 if invalid
-validate_dirname() {
-    local name="$1"
-
-    # Check for empty name
-    if [[ -z "$name" ]]; then
-        return 1
-    fi
-
-    # Check for invalid characters (/, null byte, leading -)
-    if [[ "$name" =~ [/\0] ]] || [[ "$name" =~ ^\. ]] || [[ "$name" =~ ^- ]]; then
-        return 1
-    fi
-
-    return 0
-}
 
 update_pane_state() {
     local -n pane_ref=$1
@@ -118,22 +67,17 @@ init_pane() {
     local pane_height="$3"
     local pane_width="$4"
 
-    pane_ref[marks_file]="$TEMP_DIR/${1}_marks"
-    pane_ref[cache_file]="$TEMP_DIR/${1}_cache"
-    pane_ref[render_file]="$TEMP_DIR/${1}_render"
-
-    touch "${pane_ref[marks_file]}" "${pane_ref[cache_file]}" "${pane_ref[render_file]}"
+    pane_ref[marks_file]=$(mktemp)
+    pane_ref[cache_file]=$(mktemp)
+    pane_ref[render_file]=$(mktemp)
 
     local new_state
-    if ! new_state=$("$PANE_MANAGER_SCRIPT" init \
+    new_state=$("$PANE_MANAGER_SCRIPT" init \
         --dir "$start_dir" \
         --marks-file "${pane_ref[marks_file]}" \
         --cache-file "${pane_ref[cache_file]}" \
         --height "$pane_height" \
-        --width "$pane_width" 2>&1); then
-        error_log "Failed to initialize pane: $new_state"
-        return 1
-    fi
+        --width "$pane_width" 2>/dev/null || true)
 
     update_pane_state "$1" "$new_state"
 }
@@ -141,15 +85,11 @@ init_pane() {
 get_active_file_path() {
     local -n active_pane_ref=$ACTIVE_PANE_NAME
     local selection
-    if ! selection=$("$PANE_MANAGER_SCRIPT" get_selection \
+    selection=$("$PANE_MANAGER_SCRIPT" get_selection \
         --dir "${active_pane_ref[dir]}" \
         --cursor "${active_pane_ref[cursor_pos]}" \
         --marks-file "${active_pane_ref[marks_file]}" \
-        --cache-file "${active_pane_ref[cache_file]}" 2>&1); then
-        error_log "Failed to get selection: $selection"
-        echo ""
-        return 1
-    fi
+        --cache-file "${active_pane_ref[cache_file]}" 2>/dev/null || true)
 
     if [ -n "$selection" ]; then
         echo "$selection" | head -n1
@@ -260,23 +200,15 @@ make_directory() {
     local dirname=""
     input_prompt "MkDir: " dirname
 
-    if [ -z "$dirname" ]; then
-        STATUS_MESSAGE="MkDir cancelled."
-        return
-    fi
-
-    if ! validate_dirname "$dirname"; then
-        STATUS_MESSAGE="Invalid directory name."
-        error_log "Invalid directory name attempted: $dirname"
-        return
-    fi
-
-    if mkdir -p "$current_dir/$dirname"; then
-        STATUS_MESSAGE="Created directory: $dirname"
-        refresh_panes
+    if [ -n "$dirname" ]; then
+        if mkdir -p "$current_dir/$dirname"; then
+            STATUS_MESSAGE="Created directory: $dirname"
+            refresh_panes
+        else
+            STATUS_MESSAGE="Error creating directory."
+        fi
     else
-        STATUS_MESSAGE="Error creating directory."
-        error_log "Failed to create directory: $current_dir/$dirname"
+        STATUS_MESSAGE="MkDir cancelled."
     fi
 }
 
@@ -404,7 +336,8 @@ function fmt(s, w, ansi_re, v, out, rem, matchpos, matchlen, token, count, need)
 draw_ui() {
     local term_height=$(tput lines)
     local term_width=$(tput cols)
-    local pane_height=$((term_height - FOOTER_HEIGHT))
+    local footer_lines=2
+    local pane_height=$((term_height - footer_lines))
     local half_width=$(( (term_width - 1) / 2 ))
 
     tput clear
@@ -416,13 +349,13 @@ draw_ui() {
         --dir "${PANE_0[dir]}" --cursor "${PANE_0[cursor_pos]}" --scroll "${PANE_0[scroll_offset]}" \
         --marks-file "${PANE_0[marks_file]}" --cache-file "${PANE_0[cache_file]}" \
         --is-active "$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "true" || echo "false")" \
-        --height "$pane_height" --width "$half_width")
+        --height "$pane_height" --width "$half_width" 2>/dev/null || true)
 
     pane1_content=$("$PANE_MANAGER_SCRIPT" get_pane_content \
         --dir "${PANE_1[dir]}" --cursor "${PANE_1[cursor_pos]}" --scroll "${PANE_1[scroll_offset]}" \
         --marks-file "${PANE_1[marks_file]}" --cache-file "${PANE_1[cache_file]}" \
         --is-active "$([ "$ACTIVE_PANE_NAME" == "PANE_1" ] && echo "true" || echo "false")" \
-        --height "$pane_height" --width "$half_width")
+        --height "$pane_height" --width "$half_width" 2>/dev/null || true)
 
     render_pane_to_file "$pane0_content" "${PANE_0[render_file]}" "$half_width" "$pane_height"
     render_pane_to_file "$pane1_content" "${PANE_1[render_file]}" "$half_width" "$pane_height"
@@ -434,7 +367,7 @@ draw_ui() {
     tput el
     printf " %s\n" "$STATUS_MESSAGE"
     tput el
-    printf " F1 Help  F2 View  F3 Edit  F4 MkDir  F5 Copy  F6 Move  F7 Delete  F10 Quit"
+    printf " F1 Help  F2 Menu  F3 View  F4 Edit  F5 Copy  F6 Move  F7 MkDir  F8 Delete  F9 Pulldown  F10 Quit"
 }
 
 update_line() {
@@ -502,14 +435,14 @@ main() {
 
         # 2. Read input with a small timeout to catch the SIGWINCH flag
         local key
-        if ! IFS= read -rsn1 -t "$INPUT_TIMEOUT" key; then
+        if ! IFS= read -rsn1 -t 0.2 key; then
             continue # No key pressed, loop back to check NEEDS_REDRAW
         fi
 
         # 3. Handle escape sequences
         if [[ "$key" == $'\e' ]]; then
             local seq=""
-            while read -rsn1 -t "$ESCAPE_SEQ_TIMEOUT" char; do seq="$seq$char"; done
+            while read -rsn1 -t 0.005 char; do seq="$seq$char"; done
             key="$key$seq"
         fi
 
@@ -564,7 +497,7 @@ main() {
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
                 draw_ui
                 ;;
-            $'\e[C'|'') # Enter
+            $'\e[C'|'') # Enter ('' handles Enter key)
                 local new_state
                 new_state=$("$PANE_MANAGER_SCRIPT" navigate --direction "enter" "${common_args[@]}" 2>/dev/null || true)
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
@@ -599,13 +532,41 @@ main() {
                 STATUS_MESSAGE="Nav: Arrows/PgUp/PgDn/Home/End. Tab: Switch. Space/Ins: Mark. F10: Exit."
                 draw_ui
                 ;;
-            $'\eOQ'|$'\e[12~') view_file; draw_ui ;;
-            $'\eOR'|$'\e[13~') edit_file; draw_ui ;;
-            $'\eOS'|$'\e[14~') make_directory; draw_ui ;;
-            $'\e[15~') perform_file_operation "copy"; draw_ui ;;
-            $'\e[17~') perform_file_operation "move"; draw_ui ;;
-            $'\e[18~') perform_file_operation "delete"; draw_ui ;;
-            $'\e[21~'|$'\e[24~'|'q') break ;;
+            $'\eOQ'|$'\e[12~') # F2 Menu
+                STATUS_MESSAGE="F2 Menu: Not implemented."
+                draw_ui
+                ;;
+            $'\eOR'|$'\e[13~') # F3 View
+                view_file
+                draw_ui
+                ;;
+            $'\eOS'|$'\e[14~') # F4 Edit
+                edit_file
+                draw_ui
+                ;;
+            $'\e[15~') # F5 Copy
+                perform_file_operation "copy"
+                draw_ui
+                ;;
+            $'\e[17~') # F6 Move
+                perform_file_operation "move"
+                draw_ui
+                ;;
+            $'\e[18~') # F7 MkDir
+                make_directory
+                draw_ui
+                ;;
+            $'\e[19~') # F8 Delete
+                perform_file_operation "delete"
+                draw_ui
+                ;;
+            $'\e[20~') # F9 Pulldown Menu
+                STATUS_MESSAGE="F9 Pulldown Menu: Not implemented."
+                draw_ui
+                ;;
+            $'\e[21~'|$'\e[24~'|'q') # F10 Quit
+                break
+                ;;
         esac
 
         # 4. Perform partial line updates if a full redraw wasn't triggered

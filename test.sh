@@ -23,8 +23,8 @@ sleep 1
 screen -S mc_test -X stuff $'\e[B'
 sleep 0.5
 
-# Press F7 to delete
-screen -S mc_test -X stuff $'\e[18~'
+# Press F8 to delete
+screen -S mc_test -X stuff $'\e[19~'
 sleep 0.5
 
 # Send "n" to the confirmation prompt and press Enter
@@ -32,7 +32,16 @@ screen -S mc_test -X stuff "n"
 screen -S mc_test -X stuff $'\x0a'
 sleep 0.5
 
-# --- Test 2: Overwrite Confirmation (Confirm) ---
+# --- Test 2: MkDir (F7) ---
+# Press F7 to create a directory
+screen -S mc_test -X stuff $'\e[18~'
+sleep 0.5
+# Type the directory name and press Enter
+screen -S mc_test -X stuff "new_dir"
+screen -S mc_test -X stuff $'\x0a'
+sleep 1
+
+# --- Test 3: Overwrite Confirmation (Confirm) ---
 # Navigate to file_to_move.txt (1 more down)
 screen -S mc_test -X stuff $'\e[B'
 sleep 0.5
@@ -66,13 +75,19 @@ if [ ! -f "test_dir/source/file_to_delete.txt" ]; then
     test_passed=false
 fi
 
-# Verification 2: Check that the file was moved (no longer in source)
+# Verification 2: Check that the new directory was created
+if [ ! -d "test_dir/source/new_dir" ]; then
+    echo "FAIL: new_dir was not created."
+    test_passed=false
+fi
+
+# Verification 3: Check that the file was moved (no longer in source)
 if [ -f "test_dir/source/file_to_move.txt" ]; then
     echo "FAIL: file_to_move.txt was not moved from the source directory."
     test_passed=false
 fi
 
-# Verification 3: Check that the destination file WAS overwritten
+# Verification 4: Check that the destination file WAS overwritten
 if ! grep -q "source" test_dir/dest/file_to_move.txt; then
     echo "FAIL: dest/file_to_move.txt was not overwritten."
     test_passed=false
@@ -82,9 +97,9 @@ fi
 rm -rf test_dir
 
 if [ "$test_passed" = true ]; then
-    echo "All confirmation tests passed!"
+    echo "All confirmation and remapping tests passed!"
     exit 0
 else
-    echo "One or more confirmation tests failed."
+    echo "One or more tests failed."
     exit 1
 fi
