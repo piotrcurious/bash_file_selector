@@ -168,6 +168,29 @@ confirm_action() {
     fi
 }
 
+# Returns: 0=Yes, 1=No, 2=All
+confirm_overwrite() {
+    local target="$1"
+    local response
+    
+    # Clean footer area and prompt
+    tput cup $(( $(tput lines) - 1 )) 0
+    tput el
+    printf " File exists: %s. Overwrite? [n] y a: " "$(basename "$target")"
+    
+    tput cnorm
+    stty echo icanon
+    read -r response
+    stty -echo -icanon -ixon
+    tput civis
+
+    case "$response" in
+        [Aa]*) return 2 ;; # All
+        [Yy]*) return 0 ;; # Yes
+        *)     return 1 ;; # No (Default)
+    esac
+}
+
 view_file() {
     local filepath
     filepath=$(get_active_file_path)
@@ -218,87 +241,76 @@ make_directory() {
 }
 
 
+
 perform_file_operation() {
     local operation="$1"
     local source_pane_name="$ACTIVE_PANE_NAME"
+    local -n source_pane_ref="$source_pane_name"
+    local OVERWRITE_ALL=false
     local dest_dir=""
 
-    local -n source_pane_ref="$source_pane_name"
-
-    # We always operate FROM the Active Pane.
-    # If Copy/Move, the destination is the directory of the INACTIVE pane.
+    # 1. Determine Destination
     if [[ "$operation" != "delete" ]]; then
-        local dest_pane_name
-        if [[ "$ACTIVE_PANE_NAME" == "PANE_0" ]]; then
-            dest_pane_name="PANE_1"
-        else
-            dest_pane_name="PANE_0"
-        fi
-        
+        local dest_pane_name=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
         local -n dest_pane_ref="$dest_pane_name"
         dest_dir="${dest_pane_ref[dir]}"
         
-        if [[ "${source_pane_ref[dir]}" == "$dest_dir" ]]; then
-            STATUS_MESSAGE="Source and Destination directories are the same."
-            return
-        fi
+        [[ "${source_pane_ref[dir]}" == "$dest_dir" ]] && { STATUS_MESSAGE="Source/Dest are same."; return; }
     fi
 
-    local selection_output
-    if ! selection_output=$("$PANE_MANAGER_SCRIPT" get_selection \
+    # 2. Get Selected Files
+    mapfile -t files_to_operate_on < <("$PANE_MANAGER_SCRIPT" get_selection \
         --dir "${source_pane_ref[dir]}" \
         --cursor "${source_pane_ref[cursor_pos]}" \
         --marks-file "${source_pane_ref[marks_file]}" \
-        --cache-file "${source_pane_ref[cache_file]}" 2>/dev/null); then
-        STATUS_MESSAGE="Error retrieving selection."
-        return
-    fi
+        --cache-file "${source_pane_ref[cache_file]}" 2>/dev/null)
 
-    local -a files_to_operate_on
-    if [ -n "$selection_output" ]; then
-        mapfile -t files_to_operate_on <<< "$selection_output"
-        if [[ ${#files_to_operate_on[@]} -gt 0 && -z "${files_to_operate_on[-1]}" ]]; then
-            unset 'files_to_operate_on[-1]'
-        fi
-    fi
+    [[ ${#files_to_operate_on[@]} -eq 0 ]] && { STATUS_MESSAGE="No files selected."; return; }
 
-    if [ ${#files_to_operate_on[@]} -eq 0 ]; then
-        STATUS_MESSAGE="No files selected."
-        return
-    fi
-
+    # 3. Handle Deletion Confirmation (Global)
     if [[ "$operation" == "delete" ]]; then
         if ! confirm_action "Delete ${#files_to_operate_on[@]} items?"; then
-            STATUS_MESSAGE="Delete cancelled."
-            return
+            STATUS_MESSAGE="Delete cancelled."; return
         fi
     fi
 
-    local success_count=0
-    local error_count=0
+    # 4. Process Loop
+    local success_count=0 error_count=0 skipped_count=0
 
     for src_path in "${files_to_operate_on[@]}"; do
-        [ -e "$src_path" ] || continue
+        [[ -e "$src_path" ]] || continue
+        local filename=$(basename "$src_path")
 
         if [[ "$operation" != "delete" ]]; then
-            local dest_path="$dest_dir/$(basename "$src_path")"
-            if [ -e "$dest_path" ]; then
-                 STATUS_MESSAGE="Skipped '$dest_path' (exists)."
-                 error_count=$((error_count+1))
-                 continue
+            local dest_path="$dest_dir/$filename"
+            
+            if [[ -e "$dest_path" ]]; then
+                if [[ "$OVERWRITE_ALL" == "true" ]]; then
+                    : # Proceed to operation
+                else
+                    local res=0
+                    confirm_overwrite "$dest_path" || res=$?
+                    if [[ $res -eq 1 ]]; then
+                        skipped_count=$((skipped_count + 1))
+                        continue
+                    elif [[ $res -eq 2 ]]; then
+                        OVERWRITE_ALL=true
+                    fi
+                fi
             fi
         fi
 
         case "$operation" in
-            copy) if cp -r "$src_path" "$dest_dir/"; then success_count=$((success_count+1)); else error_count=$((error_count+1)); fi ;;
-            move) if mv "$src_path" "$dest_dir/"; then success_count=$((success_count+1)); else error_count=$((error_count+1)); fi ;;
-            delete) if rm -rf "$src_path"; then success_count=$((success_count+1)); else error_count=$((error_count+1)); fi ;;
+            copy)   cp -r "$src_path" "$dest_dir/" && success_count=$((success_count+1)) || error_count=$((error_count+1)) ;;
+            move)   mv "$src_path" "$dest_dir/" && success_count=$((success_count+1)) || error_count=$((error_count+1)) ;;
+            delete) rm -rf "$src_path" && success_count=$((success_count+1)) || error_count=$((error_count+1)) ;;
         esac
     done
 
-    STATUS_MESSAGE="Finished '$operation': $success_count OK, $error_count Failed."
+    STATUS_MESSAGE="Done: $success_count OK, $error_count Error, $skipped_count Skipped."
     refresh_panes
 }
+
 
 
 render_pane_to_file() {
