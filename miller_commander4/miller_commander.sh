@@ -223,10 +223,8 @@ perform_file_operation() {
     local source_pane_name="$ACTIVE_PANE_NAME"
     local dest_dir=""
 
-    # FIX 1: Resolve variable names first, then create nameref
     local -n source_pane_ref="$source_pane_name"
 
-    # FIX 2: Correct Directionality
     # We always operate FROM the Active Pane.
     # If Copy/Move, the destination is the directory of the INACTIVE pane.
     if [[ "$operation" != "delete" ]]; then
@@ -252,18 +250,14 @@ perform_file_operation() {
         --dir "${source_pane_ref[dir]}" \
         --cursor "${source_pane_ref[cursor_pos]}" \
         --marks-file "${source_pane_ref[marks_file]}" \
-        --cache-file "${source_pane_ref[cache_file]}" 2>&1); then
-        # Assuming error_log is defined or just output to stderr
-        echo "Failed to get selection: $selection_output" >&2 
+        --cache-file "${source_pane_ref[cache_file]}" 2>/dev/null); then
         STATUS_MESSAGE="Error retrieving selection."
         return
     fi
 
-    # Handle mapfile safely
     local -a files_to_operate_on
     if [ -n "$selection_output" ]; then
         mapfile -t files_to_operate_on <<< "$selection_output"
-        # Trim trailing empty element if mapfile added one from a trailing newline
         if [[ ${#files_to_operate_on[@]} -gt 0 && -z "${files_to_operate_on[-1]}" ]]; then
             unset 'files_to_operate_on[-1]'
         fi
@@ -290,10 +284,6 @@ perform_file_operation() {
         if [[ "$operation" != "delete" ]]; then
             local dest_path="$dest_dir/$(basename "$src_path")"
             if [ -e "$dest_path" ]; then
-                # Simple interactive overwrite check
-                # Note: In a real TUI, you might want a specific popup function here
-                # preventing the loop from breaking the UI layout. 
-                # For now, we skip or use the existing status message approach.
                  STATUS_MESSAGE="Skipped '$dest_path' (exists)."
                  error_count=$((error_count+1))
                  continue
@@ -476,6 +466,9 @@ main() {
         STATUS_MESSAGE=""
         local -n pane_ref=$ACTIVE_PANE_NAME
         local lines_to_update_csv=""
+        
+        # [FIX]: Capture scroll offset before navigation
+        local old_scroll="${pane_ref[scroll_offset]}"
 
         local common_args=(
             --dir "${pane_ref[dir]}"
@@ -492,13 +485,27 @@ main() {
                 local new_state
                 new_state=$("$PANE_MANAGER_SCRIPT" navigate --direction "up" "${common_args[@]}" 2>/dev/null || true)
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
-                lines_to_update_csv=${pane_ref[lines_to_update]}
+                
+                # [FIX]: Check if scroll changed
+                if [ "${pane_ref[scroll_offset]}" != "$old_scroll" ]; then
+                    draw_ui
+                    lines_to_update_csv=""
+                else
+                    lines_to_update_csv=${pane_ref[lines_to_update]}
+                fi
                 ;;
             $'\e[B') # Down
                 local new_state
                 new_state=$("$PANE_MANAGER_SCRIPT" navigate --direction "down" "${common_args[@]}" 2>/dev/null || true)
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
-                lines_to_update_csv=${pane_ref[lines_to_update]}
+                
+                # [FIX]: Check if scroll changed
+                if [ "${pane_ref[scroll_offset]}" != "$old_scroll" ]; then
+                    draw_ui
+                    lines_to_update_csv=""
+                else
+                    lines_to_update_csv=${pane_ref[lines_to_update]}
+                fi
                 ;;
             $'\e[5~') # Page Up
                 local new_state
