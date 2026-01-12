@@ -9,6 +9,9 @@ set -euo pipefail
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 LOG_FILE="$SCRIPT_DIR/commander.log"  
+error_log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1" >> "${LOG_FILE:-/dev/null}"
+}
 PANE_MANAGER_SCRIPT="$SCRIPT_DIR/file_selector.sh"
 
 # Check dependencies
