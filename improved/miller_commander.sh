@@ -205,6 +205,24 @@ input_prompt() {
     printf -v "$result_var" "%s" "$input_val"
 }
 
+# Confirm destructive action
+# Arguments:
+#   $1 - Confirmation prompt
+# Returns:
+#   0 if confirmed, 1 if cancelled
+confirm_action() {
+    local prompt="$1"
+    local response
+
+    input_prompt "$prompt (y/N): " response
+
+    if [[ "$response" =~ ^[Yy]$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 view_file() {
     local filepath
     filepath=$(get_active_file_path)
@@ -264,27 +282,65 @@ make_directory() {
 
 perform_file_operation() {
     local operation="$1"
-    local -n active_pane_ref=$ACTIVE_PANE_NAME
-    local inactive_pane_name=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
-    local -n inactive_pane_ref=$inactive_pane_name
 
-    readarray -t files_to_operate_on < <("$PANE_MANAGER_SCRIPT" get_selection \
-        --dir "${active_pane_ref[dir]}" \
-        --cursor "${active_pane_ref[cursor_pos]}" \
-        --marks-file "${active_pane_ref[marks_file]}" \
-        --cache-file "${active_pane_ref[cache_file]}" 2>/dev/null || true)
+    local -n source_pane_ref
+    local dest_dir
+
+    if [[ "$operation" == "delete" ]]; then
+        source_pane_ref=$ACTIVE_PANE_NAME
+    else
+        # For copy/move, source is inactive, dest is active
+        local inactive_pane_name=$([ "$ACTIVE_PANE_NAME" == "PANE_0" ] && echo "PANE_1" || echo "PANE_0")
+        source_pane_ref=$inactive_pane_name
+
+        local -n dest_pane_ref=$ACTIVE_PANE_NAME
+        dest_dir="${dest_pane_ref[dir]}"
+    fi
+
+    local selection_output
+    if ! selection_output=$("$PANE_MANAGER_SCRIPT" get_selection \
+        --dir "${source_pane_ref[dir]}" \
+        --cursor "${source_pane_ref[cursor_pos]}" \
+        --marks-file "${source_pane_ref[marks_file]}" \
+        --cache-file "${source_pane_ref[cache_file]}" 2>&1); then
+        error_log "Failed to get selection for file operation: $selection_output"
+        return
+    fi
+
+    mapfile -t files_to_operate_on <<< "$selection_output"
+    # Trim trailing newline from mapfile
+    if [[ -z "${files_to_operate_on[-1]}" ]]; then
+        unset 'files_to_operate_on[-1]'
+    fi
 
     if [ ${#files_to_operate_on[@]} -eq 0 ]; then
         STATUS_MESSAGE="No files selected."
         return
     fi
 
-    local dest_dir="${inactive_pane_ref[dir]}"
+    if [[ "$operation" == "delete" ]]; then
+        if ! confirm_action "Delete ${#files_to_operate_on[@]} items?"; then
+            STATUS_MESSAGE="Delete cancelled."
+            return
+        fi
+    fi
+
     local success_count=0
     local error_count=0
 
     for src_path in "${files_to_operate_on[@]}"; do
         [ -e "$src_path" ] || continue
+
+        if [[ "$operation" != "delete" ]]; then
+            local dest_path="$dest_dir/$(basename "$src_path")"
+            if [ -e "$dest_path" ]; then
+                if ! confirm_action "Overwrite '$dest_path'?"; then
+                    STATUS_MESSAGE="Operation cancelled."
+                    continue
+                fi
+            fi
+        fi
+
         case "$operation" in
             copy) if cp -r "$src_path" "$dest_dir/"; then success_count=$((success_count+1)); else error_count=$((error_count+1)); fi ;;
             move) if mv "$src_path" "$dest_dir/"; then success_count=$((success_count+1)); else error_count=$((error_count+1)); fi ;;
