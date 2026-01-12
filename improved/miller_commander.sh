@@ -37,6 +37,7 @@ cleanup() {
     # Clean temp files
     rm -f "${PANE_0[marks_file]:-}" "${PANE_0[cache_file]:-}" "${PANE_0[render_file]:-}" 2>/dev/null || true
     rm -f "${PANE_1[marks_file]:-}" "${PANE_1[cache_file]:-}" "${PANE_1[render_file]:-}" 2>/dev/null || true
+    rm -f "$LOG_FILE" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM HUP
 
@@ -497,7 +498,7 @@ main() {
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
                 draw_ui
                 ;;
-            $'\e[C'|'') # Enter ('' handles Enter key)
+            $'\e[C]'|'') # Enter ('' handles Enter key)
                 local new_state
                 new_state=$("$PANE_MANAGER_SCRIPT" navigate --direction "enter" "${common_args[@]}" 2>/dev/null || true)
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
