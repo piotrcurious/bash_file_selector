@@ -1,3 +1,17 @@
+# Bash File Manager Collection
+
+This repository contains a collection of Bash-based file managers, each with different features and levels of complexity.
+
+## Project Overview
+
+This repository hosts two main projects:
+
+1.  **[Miller Commander](./miller_commander6/)**: A lightweight, dual-pane file manager inspired by Norton Commander and Midnight Commander. It is designed for efficiency and minimal resource usage, making it ideal for resource-constrained environments. The documentation below describes the most feature-rich version.
+
+2.  **[Noon Commander](./noonCommander/)**: A single-pane file manager that offers a different approach to file management, with a focus on simplicity and ease of use. It has evolved through several versions, each adding new features and improvements.
+
+---
+
 # Bash Miller Commander
 
 A lightweight, dual-pane file manager written in pure Bash, inspired by Norton Commander and Midnight Commander. Designed specifically for resource-constrained environments like embedded systems, routers, and devices with only BusyBox available.
