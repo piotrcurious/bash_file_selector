@@ -13,6 +13,7 @@ error_log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1" >> "${LOG_FILE:-/dev/null}"
 }
 PANE_MANAGER_SCRIPT="$SCRIPT_DIR/file_selector.sh"
+HELP_FILE="$SCRIPT_DIR/HELP.txt"
 
 # Check dependencies
 if [ ! -x "$PANE_MANAGER_SCRIPT" ]; then
@@ -62,6 +63,90 @@ stty -echo -icanon -ixon 2>/dev/null || true
 # ==============================================================================
 #  HELPER FUNCTIONS
 # ==============================================================================
+
+
+# ==============================================================================
+#  HELP FILE / SHOW HELP
+# ==============================================================================
+ensure_help_file() {
+    if [ ! -f "$HELP_FILE" ]; then
+        cat > "$HELP_FILE" <<'EOF'
+BASH MILLER COMMANDER - Help & Key Bindings
+==========================================
+
+Navigation:
+  Up / Down Arrows        - Move selection up / down
+  Page Up / Page Down     - Move by page (page size = pane height - 2)
+  Home / End              - Jump to top / bottom of list
+  Enter / right arrow     - Enter directory / open selection
+  Backspace / left arrow  - Go up to parent directory
+  Tab                     - Switch active pane
+  Space / Insert          - Toggle mark for selected entry
+  Ctrl+R                  - Refresh panes
+
+Function Keys:
+  F1   - Help (this page)
+  F2   - Menu (not implemented)
+  F3   - View (open selected file in external viewer or pager)
+  F4   - Edit (edit selected file in $EDITOR or nano)
+  F5   - Copy (copy selected items to other pane)
+  F6   - Move (move selected items to other pane)
+  F7   - MkDir (create directory in active pane)
+  F8   - Delete (delete selected items)
+  F9   - Pulldown Menu (not implemented)
+  F10  - Quit / Exit
+
+Other:
+  Ctrl+g                    - Display size of current selection
+  q                         - Quit (also mapped to F10)
+
+Notes:
+  - Many operations will open external pagers/editors using $PAGER and $EDITOR.
+  - To change key bindings, edit this help file (it is only informational) and
+    modify input handling in the script if you want to change behavior.
+  - If you prefer a different pager, set the PAGER environment variable before
+    launching the commander (e.g., PAGER=most ./commander.sh).
+
+EOF
+        chmod 644 "$HELP_FILE" 2>/dev/null || true
+    fi
+}
+
+show_help() {
+    ensure_help_file
+
+    # Choose pager: prefer $PAGER, fallback to less, then more, then cat
+    local pager="${PAGER:-less}"
+    local pager_cmd="${pager%% *}" # first token
+    local pager_args=""
+    # add -R if using less and less supports it
+    if command -v "$pager_cmd" &>/dev/null; then
+        if [ "$pager_cmd" = "less" ]; then
+            pager_args="-R"
+        fi
+    else
+        if command -v less &>/dev/null; then
+            pager="less"
+            pager_args="-R"
+        elif command -v more &>/dev/null; then
+            pager="more"
+            pager_args=""
+        else
+            pager="cat"
+            pager_args=""
+        fi
+    fi
+
+    # Use suspend_and_run to restore terminal state for pager and come back cleanly
+    if [ -n "$pager_args" ]; then
+        suspend_and_run "$pager" "$pager_args" "$HELP_FILE"
+    else
+        suspend_and_run "$pager" "$HELP_FILE"
+    fi
+
+    STATUS_MESSAGE="Help closed."
+}
+
 
 calculate_size() {
     local -n active_pane_ref=$ACTIVE_PANE_NAME
@@ -688,7 +773,7 @@ main() {
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
                 draw_ui # Directory change affects everything usually
                 ;;
-            $'\e[D'|$'\x7f') # Back / Backspace
+            $'\x7f'|$'\b'|$'\e[D') # Back / Backspace
                 local new_state
                 new_state=$("$PANE_MANAGER_SCRIPT" navigate --direction "back" "${common_args[@]}" 2>/dev/null || true)
                 update_pane_state "$ACTIVE_PANE_NAME" "$new_state"
@@ -722,6 +807,7 @@ main() {
                 ;;
             $'\eOP'|$'\e[11~') # F1 Help
                 STATUS_MESSAGE="Nav: Arrows/PgUp/PgDn/Home/End. Tab: Switch. Space/Ins: Mark. F10: Exit."
+			    show_help
                 draw_ui
                 ;;
             $'\eOQ'|$'\e[12~') # F2 Menu
