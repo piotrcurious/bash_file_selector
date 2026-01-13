@@ -147,32 +147,45 @@ show_help() {
     STATUS_MESSAGE="Help closed."
 }
 
-
 calculate_size() {
     local -n active_pane_ref=$ACTIVE_PANE_NAME
-    local selection
-    selection=$(get_active_file_path)
+    local files_to_calc=()
+    
+    # 1. Get all selected/marked items using the manager script
+    mapfile -t files_to_calc < <("$PANE_MANAGER_SCRIPT" get_selection \
+        --dir "${active_pane_ref[dir]}" \
+        --cursor "${active_pane_ref[cursor_pos]}" \
+        --marks-file "${active_pane_ref[marks_file]}" \
+        --cache-file "${active_pane_ref[cache_file]}" 2>/dev/null)
 
-    if [ -z "$selection" ]; then
+    local count=${#files_to_calc[@]}
+
+    if [ "$count" -eq 0 ]; then
         STATUS_MESSAGE="Nothing selected to calculate."
         return
     fi
 
-    if [ -d "$selection" ]; then
-        STATUS_MESSAGE="Calculating directory size: $(basename "$selection")..."
-        draw_ui # Show the status message
-        
-        # Calculate human-readable size of directory
-        local dir_size
-        dir_size=$(du -sh "$selection" 2>/dev/null | cut -f1)
-        STATUS_MESSAGE="Size of '$(basename "$selection")': $dir_size"
+    # 2. Inform user calculation is starting (useful for large directories)
+    if [ "$count" -eq 1 ]; then
+        STATUS_MESSAGE="Calculating size: $(basename "${files_to_calc[0]}") ..."
     else
-        # For files, just use ls or stat
-        local file_size
-        file_size=$(ls -lh "$selection" | awk '{print $5}')
-        STATUS_MESSAGE="Size of '$(basename "$selection")': $file_size"
+        STATUS_MESSAGE="Calculating total size of $count items..."
+    fi
+    draw_ui 
+
+    # 3. Use 'du' to get the total sum (-c) in human-readable format (-h)
+    # We use 'tail -n1' to get the "total" line produced by 'du -c'
+    local total_output
+    total_output=$(du -sch "${files_to_calc[@]}" 2>/dev/null | tail -n1 | cut -f1)
+
+    # 4. Final Status Update
+    if [ "$count" -eq 1 ]; then
+        STATUS_MESSAGE="Size of '$(basename "${files_to_calc[0]}")': $total_output"
+    else
+        STATUS_MESSAGE="Total size ($count items): $total_output"
     fi
 }
+
 
 update_pane_state() {
     local -n pane_ref=$1
