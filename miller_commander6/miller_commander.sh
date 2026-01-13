@@ -5,7 +5,7 @@
 # ==============================================================================
 # BASH MILLER COMMANDER (With Instant Resize Support)
 # ==============================================================================
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 LOG_FILE="$SCRIPT_DIR/commander.log"  
@@ -19,6 +19,11 @@ if [ ! -x "$PANE_MANAGER_SCRIPT" ]; then
     echo "Error: The pane manager script '$PANE_MANAGER_SCRIPT' is not executable or not found." >&2
     exit 1
 fi
+
+# Detect showkey availability
+HAS_SHOWKEY=0
+if command -v showkey &>/dev/null; then HAS_SHOWKEY=1; fi
+
 # Global flag for resize
 NEEDS_REDRAW=0
 handle_resize() {
@@ -41,14 +46,18 @@ cleanup() {
     # Clean temp files
     rm -f "${PANE_0[marks_file]:-}" "${PANE_0[cache_file]:-}" "${PANE_0[render_file]:-}" 2>/dev/null || true
     rm -f "${PANE_1[marks_file]:-}" "${PANE_1[cache_file]:-}" "${PANE_1[render_file]:-}" 2>/dev/null || true
-    rm -f "$LOG_FILE" 2>/dev/null || true
+    #rm -f "$LOG_FILE" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM HUP
 
 # Enter alt screen, hide cursor, disable echo/canonical
 tput smcup
 tput civis
+#stty -echo -icanon -ixon -isig 2>/dev/null || true
+#stty -echo -icanon -ixon -isig intr undef quit undef susp undef 2>/dev/null || true
+#stty -echo -icanon -ixon -isig -brkint -inpck -istrip 2>/dev/null || true
 stty -echo -icanon -ixon 2>/dev/null || true
+
 
 # ==============================================================================
 #  HELPER FUNCTIONS
@@ -155,6 +164,7 @@ suspend_and_run() {
     tput smcup
     tput civis
     stty -echo -icanon -ixon 2>/dev/null || true
+    #stty -echo -icanon -ixon -isig -brkint -inpck -istrip 2>/dev/null || true
 
     refresh_panes
     draw_ui
@@ -533,6 +543,38 @@ update_line() {
 }
 
 
+# --- INPUT HANDLER ---
+# Returns the key pressed. Handles Ctrl-Space specifically.
+
+get_input() {
+    local key
+    # Standard read. We capture the exit status to handle timeouts.
+    if ! IFS= read -rsn1 -t 0.1 key; then
+        return 1
+    fi
+
+    # 1. Detect Ctrl-Space (now mapped to \x1f / Octal 037)
+#    if [[ "$key" == $'\x1f' || "$key" == $'\x00' || -z "$key" ]]; then
+#        echo "CTRL_SPACE"
+#        return 0
+#    fi
+
+    # 2. Handle Escape Sequences (Arrows, F-keys)
+    if [[ "$key" == $'\e' ]]; then
+        local seq=""
+        while read -rsn1 -t 0.005 char; do
+            seq="$seq$char"
+        done
+        echo "$key$seq"
+        return 0
+    fi
+
+    # 3. Handle Regular Keys (including Enter)
+    echo "$key"
+    return 0
+}
+
+
 # ---------- main ----------
 main() {
     local start_dir_0=${1:-"$(pwd)"}
@@ -563,17 +605,13 @@ main() {
             NEEDS_REDRAW=0
         fi
 
-        # 2. Read input with a small timeout to catch the SIGWINCH flag
-        local key
-        if ! IFS= read -rsn1 -t 0.2 key; then
-            continue # No key pressed, loop back to check NEEDS_REDRAW
-        fi
-
-        # 3. Handle escape sequences
-        if [[ "$key" == $'\e' ]]; then
-            local seq=""
-            while read -rsn1 -t 0.005 char; do seq="$seq$char"; done
-            key="$key$seq"
+		# 1. Read input
+		local key
+        key=$(get_input) || continue
+        
+        # If get_input returned 1 (timeout), loop back to check for resizes
+        if [[ $? -ne 0 ]]; then
+            continue
         fi
 
         STATUS_MESSAGE=""
@@ -673,7 +711,7 @@ main() {
                 ;;
 
                # --- Ctrl-Space: Display Size ---
-            $'\0') 
+              $'\e[27;5;13~' | $'\e[13;5u' | $'\a' | $'\x07')
                 calculate_size
                 draw_ui
                 ;;                
