@@ -1,1 +1,1 @@
-bit improved and more complex version supporting partial updates
+This version of Miller Commander introduces partial updates, which improves performance by only redrawing the lines that have changed. It also includes support for external editors and viewers, and full function key support.

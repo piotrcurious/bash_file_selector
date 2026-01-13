@@ -1,2 +1,1 @@
-now with file sizes and directory sizes (ctrl-g because ctrl-space is too difficult)
-
+This version of Miller Commander adds the ability to view file and directory sizes. File sizes are displayed in a new column next to the filenames. Additionally, you can press `Ctrl+G` to calculate and display the total size of any marked files or directories. A help file (`HELP.txt`) has also been added and can be viewed by pressing `F1`.

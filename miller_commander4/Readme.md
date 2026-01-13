@@ -1,1 +1,1 @@
-bit better menu keybindings , few bugs fixed 
+This version of Miller Commander features improved menu keybindings and several bug fixes. Key enhancements include a confirmation prompt for delete operations to prevent accidental data loss, and more robust handling of window resizing.

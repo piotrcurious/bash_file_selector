@@ -1,1 +1,1 @@
-simple miller commander based on the concept
+This is the initial version of the Miller Commander, a dual-pane file manager written in Bash. It uses a stateless pane manager (`file_selector.sh`) to handle the logic for each pane, and a main script (`miller_commander5.sh`) to manage the overall application state and user input. The UI is rendered using an `awk`-based compositor that combines the output of the two panes.

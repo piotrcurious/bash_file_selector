@@ -1,1 +1,1 @@
-dual pane separate refresh version
+This version of Miller Commander introduces a significant performance improvement with the dual-pane separate refresh feature. This allows the application to redraw only the active pane, rather than the entire screen, resulting in a much smoother and more responsive user experience. It also includes an overwrite confirmation prompt for copy and move operations.
